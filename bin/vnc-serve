@@ -1,0 +1,166 @@
+#!/bin/bash
+# vnc-serve — wayvnc remote desktop manager
+#
+# Manages a wayvnc instance on a headless virtual output, with automatic
+# output enable/disable and workspace migration.
+#
+# Usage:
+#   vnc-serve            # start wayvnc on HEADLESS_OUTPUT (auto-restart on crash)
+#   vnc-serve grab       # move all workspaces to HEADLESS_OUTPUT (full remote access)
+#   vnc-serve release    # move all workspaces to PHYSICAL_OUTPUT (physical desk use)
+#   vnc-serve stop       # kill wayvnc and migrate workspaces to PHYSICAL_OUTPUT
+#   vnc-serve kill       # stop everything and destroy the headless output (for Steam)
+
+set -u
+
+# shellcheck source=_lib.sh
+. "$(dirname "$(readlink -f "$0")")/_lib.sh"
+svds_load_conf
+
+require_wayland() {
+    if [ -z "${WAYLAND_DISPLAY:-}" ]; then
+        echo "Error: WAYLAND_DISPLAY not set. Run from inside your Sway session." >&2
+        exit 1
+    fi
+}
+
+# Restart output-watcher if not running. Called after vnc-serve kill destroyed
+# the process group — vnc-serve start needs to bring it back.
+_restart_output_watcher() {
+    local pgid_file="${XDG_RUNTIME_DIR:-/tmp}/output-watcher.pgid"
+    if [ -f "$pgid_file" ] && kill -0 -- -"$(cat "$pgid_file")" 2>/dev/null; then
+        return 0  # already running
+    fi
+    rm -f "$pgid_file"
+    output-watcher &
+    disown
+}
+
+# Restart kanshi if not running. Called after vnc-serve kill destroyed it.
+_restart_kanshi() {
+    local pid_file="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/kanshi-start.pid"
+    if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+        return 0  # already running
+    fi
+    rm -f "$pid_file"
+    kanshi-start &
+    disown
+}
+
+case "${1:-start}" in
+    kill)
+        require_wayland
+        echo "Killing VNC and destroying headless output..."
+
+        # 1. Stop wayvnc and its exec_always wrapper.
+        #    sway-vnc.conf launches: bash -c 'sleep 2; pgrep -x wayvnc || vnc-serve'
+        #    If we only kill wayvnc, the wrapper respawns it. Kill the wrapper first
+        #    so it can't race us, then kill wayvnc itself.
+        pkill -u "$(id -u)" -f 'pgrep -x wayvnc.*vnc-serve' 2>/dev/null || true
+        pkill -u "$(id -u)" -x wayvnc 2>/dev/null || true
+
+        # 2. Migrate workspaces to physical output
+        ws-migrate hdmi 2>/dev/null || true
+
+        # 3. Stop output-watcher (kill via pgid file — prevents it from
+        #    auto-migrating back or fighting the teardown)
+        _ow_pgid_file="${XDG_RUNTIME_DIR:-/tmp}/output-watcher.pgid"
+        if [ -f "$_ow_pgid_file" ]; then
+            kill -9 -- -"$(cat "$_ow_pgid_file")" 2>/dev/null || true
+            rm -f "$_ow_pgid_file"
+        fi
+
+        # 4. Stop kanshi (it would recreate headless via exec_always on reload)
+        _ks_pid_file="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/kanshi-start.pid"
+        if [ -f "$_ks_pid_file" ]; then
+            kill "$(cat "$_ks_pid_file")" 2>/dev/null || true
+            rm -f "$_ks_pid_file"
+        fi
+
+        # 5. Discover and unplug headless output
+        svds_get_headless
+        if [ -n "$HEADLESS_OUTPUT" ]; then
+            swaymsg output "$HEADLESS_OUTPUT" unplug 2>/dev/null || true
+            echo "Unplugged $HEADLESS_OUTPUT"
+        fi
+
+        # 6. Remove state file
+        rm -f "$_SVDS_HEADLESS_STATE"
+
+        # 7. Refresh waybar
+        pkill -RTMIN+"$WAYBAR_SIGNAL" waybar 2>/dev/null || true
+
+        echo "Done. Headless output destroyed. Run 'vnc-serve start' to recreate."
+        ;;
+    stop)
+        echo "Stopping wayvnc..."
+        pkill -u "$(id -u)" -x wayvnc 2>/dev/null || true
+        # Move workspaces to PHYSICAL_OUTPUT before stopping (if available)
+        if swaymsg -t get_outputs | grep -qF "\"name\": \"$PHYSICAL_OUTPUT\""; then
+            ws-migrate hdmi 2>/dev/null || true
+        fi
+        echo "Done."
+        ;;
+    grab)
+        require_wayland
+        svds_get_headless
+        ws-migrate headless
+        ;;
+    release)
+        require_wayland
+        ws-migrate hdmi
+        ;;
+    start|*)
+        require_wayland
+
+        # Ensure headless output exists (creates if absent after vnc-serve kill)
+        svds_ensure_headless
+        if [ -z "$HEADLESS_OUTPUT" ]; then
+            echo "Error: could not create headless output" >&2
+            exit 1
+        fi
+
+        # Restart supporting daemons if they were killed by vnc-serve kill
+        _restart_kanshi
+        sleep 1  # let kanshi apply profiles before output-watcher starts
+        _restart_output_watcher
+
+        echo "Starting wayvnc on $HEADLESS_OUTPUT..."
+        echo "Connect: ssh -L ${VNC_PORT}:127.0.0.1:${VNC_PORT} -N ${VNC_SSH_HOST}"
+        echo "  vnc-serve grab     — move all workspaces here (full remote access)"
+        echo "  vnc-serve release  — move workspaces to $PHYSICAL_OUTPUT (desk use)"
+        echo "  vnc-serve kill     — destroy headless output (Steam compatibility)"
+        echo "Press Ctrl+C to stop."
+        VNC_PID=""
+        _cleanup() {
+            [ -n "$VNC_PID" ] && kill "$VNC_PID" 2>/dev/null
+            [ -n "$VNC_PID" ] && wait "$VNC_PID" 2>/dev/null
+            exit 0
+        }
+        trap '_cleanup' INT TERM
+        while true; do
+            wayvnc --output="$HEADLESS_OUTPUT" "$VNC_ADDR" "$VNC_PORT" &
+            VNC_PID=$!
+            wait "$VNC_PID"
+            exit_code=$?
+            VNC_PID=""
+            if [ $exit_code -eq 0 ] || [ $exit_code -eq 130 ] || [ $exit_code -eq 143 ]; then
+                break
+            fi
+            echo "wayvnc exited (code $exit_code), restarting in 2s..."
+            svds_ensure_headless
+            # Wait for kanshi to fire the headless profile first (covers the case
+            # where HDMI-A-1 truly disconnected and kanshi handles migration via its
+            # 0.5s-delayed exec). Then unconditionally migrate workspaces ourselves.
+            #
+            # Why: many KVM switches preserve EDID, so Sway never removes HDMI-A-1
+            # from its output list. kanshi never fires the headless profile. Without
+            # this call, all workspaces stay stranded on HDMI-A-1 (dark/inaccessible)
+            # and VNC shows an empty HEADLESS-1. ws-migrate is idempotent — calling it
+            # twice (kanshi + here) is harmless.
+            sleep 1.5
+            ws-migrate headless 2>/dev/null || true
+            sleep 0.5
+        done
+        ;;
+esac

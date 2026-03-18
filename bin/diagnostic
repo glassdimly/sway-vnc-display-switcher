@@ -1,0 +1,190 @@
+#!/bin/bash
+# diagnostic — sway-vnc-display-switcher diagnostic snapshot
+#
+# Prints full system status in one shot: outputs, workspaces, wayvnc,
+# output-watcher, lock, USB hub, and virtual pointer.
+# No side effects — safe to run at any time.
+
+set -u
+
+# ── Colors ────────────────────────────────────────────────────────────────────
+if [ -t 1 ]; then
+    R='\033[0;31m' G='\033[0;32m' Y='\033[0;33m' B='\033[1m' N='\033[0m'
+else
+    R='' G='' Y='' B='' N=''
+fi
+
+_hdr() { printf "\n${B}--- %s ---${N}\n" "$*"; }
+
+# ── Load conf ─────────────────────────────────────────────────────────────────
+_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/sway-vnc-display-switcher/conf"
+[[ -f "$_CONF" && "$(stat -c %u "$_CONF")" == "$(id -u)" ]] && source "$_CONF"
+unset _CONF
+
+PHYSICAL_OUTPUT="${PHYSICAL_OUTPUT:-HDMI-A-1}"
+HEADLESS_OUTPUT="${HEADLESS_OUTPUT:-HEADLESS-1}"
+PHYSICAL_POS="${PHYSICAL_POS:-0 0}"
+HEADLESS_POS="${HEADLESS_POS:-2560 0}"
+MONITOR_RES="${MONITOR_RES:-2560x1440}"
+HEADLESS_RES="${HEADLESS_RES:-2560x1440}"
+HEADLESS_SCALE="${HEADLESS_SCALE:-1}"
+VNC_ADDR="${VNC_ADDR:-127.0.0.1}"
+VNC_PORT="${VNC_PORT:-5900}"
+KVM_USB_HUB="${KVM_USB_HUB:-}"
+WS_MAX="${WS_MAX:-10}"
+
+# ── Header ────────────────────────────────────────────────────────────────────
+printf "${B}=== sway-vnc-display-switcher diag ===${N}  %s\n" "$(date '+%Y-%m-%d %H:%M:%S')"
+
+# ── Config ────────────────────────────────────────────────────────────────────
+_hdr "Config"
+printf "  %-20s %s\n" "PHYSICAL_OUTPUT"  "$PHYSICAL_OUTPUT"
+printf "  %-20s %s\n" "HEADLESS_OUTPUT"  "$HEADLESS_OUTPUT"
+printf "  %-20s %s\n" "PHYSICAL_POS"     "$PHYSICAL_POS"
+printf "  %-20s %s\n" "HEADLESS_POS"     "$HEADLESS_POS"
+printf "  %-20s %s\n" "MONITOR_RES"      "$MONITOR_RES"
+printf "  %-20s %s\n" "HEADLESS_RES"     "$HEADLESS_RES"
+printf "  %-20s %s\n" "HEADLESS_SCALE"   "$HEADLESS_SCALE"
+printf "  %-20s %s\n" "WS_MAX"           "$WS_MAX"
+printf "  %-20s %s\n" "VNC"              "${VNC_ADDR}:${VNC_PORT}"
+printf "  %-20s %s\n" "KVM_USB_HUB"      "${KVM_USB_HUB:-(not set)}"
+
+# ── Outputs ───────────────────────────────────────────────────────────────────
+_hdr "Outputs"
+swaymsg -t get_outputs 2>/dev/null \
+| PHYSICAL="$PHYSICAL_OUTPUT" HEADLESS="$HEADLESS_OUTPUT" python3 -c "
+import json, sys, os
+physical = os.environ['PHYSICAL']
+headless = os.environ['HEADLESS']
+try:
+    outputs = json.load(sys.stdin)
+except Exception as e:
+    print(f'  ERROR: {e}'); sys.exit(0)
+for o in outputs:
+    name  = o.get('name', '?')
+    tag   = ' (physical)' if name == physical else ' (headless)' if name == headless else ''
+    act   = 'active'   if o.get('active') else 'INACTIVE'
+    dpms  = ''         if o.get('dpms', True) else '  DPMS=OFF'
+    x, y  = o['rect']['x'], o['rect']['y']
+    scale = o.get('scale', 1.0)
+    mode  = o.get('current_mode') or {}
+    res   = f'{mode[\"width\"]}x{mode[\"height\"]}' if mode else 'no-mode'
+    print(f'  {name}{tag:<14}  {act:<8}  pos=({x},{y})  scale={scale}  {res}{dpms}')
+" || printf "  ${R}swaymsg get_outputs failed${N}\n"
+
+# ── Workspaces ────────────────────────────────────────────────────────────────
+_hdr "Workspaces"
+swaymsg -t get_workspaces 2>/dev/null \
+| PHYSICAL="$PHYSICAL_OUTPUT" HEADLESS="$HEADLESS_OUTPUT" WS_MAX="$WS_MAX" python3 -c "
+import json, sys, os
+physical = os.environ['PHYSICAL']
+headless = os.environ['HEADLESS']
+ws_max   = int(os.environ.get('WS_MAX', '10'))
+try:
+    ws_list = json.load(sys.stdin)
+except Exception as e:
+    print(f'  ERROR: {e}'); sys.exit(0)
+ws_list.sort(key=lambda w: w.get('num', 9999))
+focused_out = next((w['output'] for w in ws_list if w.get('focused')), None)
+mode = 'headless' if focused_out == headless else 'hdmi' if focused_out == physical else 'unknown'
+phys_n = sum(1 for w in ws_list if w.get('output') == physical and 1 <= w.get('num',-1) <= ws_max)
+head_n = sum(1 for w in ws_list if w.get('output') == headless  and 1 <= w.get('num',-1) <= ws_max)
+print(f'  Mode (inferred): {mode}  |  {headless}: {head_n} ws  |  {physical}: {phys_n} ws')
+print()
+for w in ws_list:
+    num   = w.get('num', -1)
+    out   = w.get('output', '?')
+    foc   = w.get('focused', False)
+    vis   = w.get('visible', False)
+    strag = (1 <= num <= ws_max) and (
+        (mode == 'headless' and out == physical) or
+        (mode == 'hdmi'     and out == headless)
+    )
+    flags = ''
+    if foc:   flags += '  <- focused'
+    if strag: flags += '  <- STRAGGLER'
+    print(f'  ws {num:>3}  {out:<14}  visible={str(vis):<5}  focused={str(foc):<5}{flags}')
+" || printf "  ${R}swaymsg get_workspaces failed${N}\n"
+
+# ── wayvnc ────────────────────────────────────────────────────────────────────
+_hdr "wayvnc"
+_pid=$(pgrep -x wayvnc 2>/dev/null | head -1)
+if [[ -n "$_pid" ]]; then
+    _cmd=$(tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null)
+    printf "  process:   running (PID %s)\n" "$_pid"
+    printf "  cmdline:   %s\n" "$_cmd"
+else
+    printf "  process:   ${R}NOT RUNNING${N}\n"
+fi
+_ctl=$(wayvncctl output-list 2>/dev/null)
+if [[ -n "$_ctl" ]]; then
+    printf "  outputs:\n"
+    while IFS= read -r line; do printf "    %s\n" "$line"; done <<< "$_ctl"
+else
+    printf "  wayvncctl: ${Y}unavailable${N}\n"
+fi
+if ss -tlnH "sport = :$VNC_PORT" 2>/dev/null | grep -q '.'; then
+    printf "  port:      listening on :${VNC_PORT}\n"
+else
+    printf "  port:      ${R}NOT listening on :${VNC_PORT}${N}\n"
+fi
+
+# ── output-watcher ────────────────────────────────────────────────────────────
+_hdr "output-watcher"
+_ow=$(pgrep -af "output-watcher" 2>/dev/null | grep -v grep | head -1)
+if [[ -n "$_ow" ]]; then
+    printf "  process:   running (%s)\n" "$_ow"
+else
+    printf "  process:   ${R}NOT RUNNING${N}\n"
+fi
+_LOG="${XDG_STATE_HOME:-$HOME/.local/state}/sway-vnc/output-watcher.log"
+if [[ -f "$_LOG" ]]; then
+    printf "  recent log:\n"
+    tail -5 "$_LOG" | while IFS= read -r line; do printf "    %s\n" "$line"; done
+else
+    printf "  log:       ${Y}not found: %s${N}\n" "$_LOG"
+fi
+
+# ── Lock ──────────────────────────────────────────────────────────────────────
+_hdr "Lock"
+_LOCK="${XDG_RUNTIME_DIR:-/run/user/${UID}}/ws-migrate.lock"
+if [[ ! -e "$_LOCK" ]]; then
+    printf "  ws-migrate.lock: absent\n"
+elif flock -n "$_LOCK" true 2>/dev/null; then
+    printf "  ws-migrate.lock: present, not held\n"
+else
+    printf "  ws-migrate.lock: ${Y}HELD — ws-migrate is running${N}\n"
+fi
+
+# ── USB hub ───────────────────────────────────────────────────────────────────
+_hdr "USB hub (KVM)"
+if [[ -z "$KVM_USB_HUB" ]]; then
+    printf "  KVM_USB_HUB not configured\n"
+elif [[ -e "/sys/bus/usb/devices/${KVM_USB_HUB}" ]]; then
+    printf "  /sys/bus/usb/devices/%s  present  → hdmi mode expected\n" "$KVM_USB_HUB"
+else
+    printf "  /sys/bus/usb/devices/%s  absent   → headless mode expected\n" "$KVM_USB_HUB"
+fi
+
+# ── Virtual pointer ───────────────────────────────────────────────────────────
+_hdr "Virtual pointer"
+swaymsg -t get_inputs 2>/dev/null \
+| HEADLESS="$HEADLESS_OUTPUT" python3 -c "
+import json, sys, os
+headless = os.environ['HEADLESS']
+try:
+    inputs = json.load(sys.stdin)
+except Exception as e:
+    print(f'  ERROR: {e}'); sys.exit(0)
+vp = next((i for i in inputs if 'virtual_pointer' in i.get('identifier','').lower()), None)
+if not vp:
+    print('  (no virtual pointer device found)')
+    sys.exit(0)
+ident  = vp.get('identifier', '?')
+mapped = vp.get('mapped_to_output') or '(none — full layout)'
+mark   = 'ok' if mapped == headless else '!'
+print(f'  {ident}')
+print(f'  mapped_to_output: {mapped}  [{mark}]')
+" || printf "  ${R}swaymsg get_inputs failed${N}\n"
+
+printf "\n"

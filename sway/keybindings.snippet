@@ -1,0 +1,27 @@
+# sway-vnc-display-switcher — sway keybindings snippet
+#
+# Merge into your ~/.config/sway/config.
+#
+# install.sh substitutes __PHYSICAL_OUTPUT__, __HEADLESS_OUTPUT__,
+# __KEY_MIGRATE_PHYSICAL__, and __KEY_MIGRATE_HEADLESS__ from your conf.
+
+# ── Workspace-to-output preference ───────────────────────────────────────────
+# Workspaces prefer the physical output; fall back to headless when the
+# physical output is unavailable (e.g. KVM switched away).
+workspace 1  output __PHYSICAL_OUTPUT__ __HEADLESS_OUTPUT__
+workspace 2  output __PHYSICAL_OUTPUT__ __HEADLESS_OUTPUT__
+workspace 3  output __PHYSICAL_OUTPUT__ __HEADLESS_OUTPUT__
+workspace 4  output __PHYSICAL_OUTPUT__ __HEADLESS_OUTPUT__
+workspace 5  output __PHYSICAL_OUTPUT__ __HEADLESS_OUTPUT__
+workspace 6  output __PHYSICAL_OUTPUT__ __HEADLESS_OUTPUT__
+workspace 7  output __PHYSICAL_OUTPUT__ __HEADLESS_OUTPUT__
+workspace 8  output __PHYSICAL_OUTPUT__ __HEADLESS_OUTPUT__
+workspace 9  output __PHYSICAL_OUTPUT__ __HEADLESS_OUTPUT__
+workspace 10 output __PHYSICAL_OUTPUT__ __HEADLESS_OUTPUT__
+
+# ── Output migration keybindings ─────────────────────────────────────────────
+# Manually migrate all workspaces to a target output.
+# output-watcher handles automatic migration on KVM switch — these bindings
+# are for manual override or for setups without output-watcher.
+bindsym __KEY_MIGRATE_PHYSICAL__ exec ws-migrate hdmi
+bindsym __KEY_MIGRATE_HEADLESS__ exec ws-migrate headless

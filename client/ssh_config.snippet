@@ -1,0 +1,23 @@
+# sway-vnc-display-switcher — SSH config snippet
+#
+# Add to ~/.ssh/config on your client machine.
+# Edit Host alias, HostName, User, and port to match your setup.
+#
+# Usage after adding:
+#   Open tunnel:  ssh -N svds
+#   Then connect your VNC client to localhost:5900
+#
+# Or use connect.sh which handles this automatically.
+
+Host svds
+    HostName <server-ip-or-hostname>
+    User <your-username>
+    LocalForward 5900 127.0.0.1:5900
+    ServerAliveInterval 30
+    ServerAliveCountMax 3
+
+# Optional: if you use a non-standard SSH port
+#   Port 2222
+
+# Optional: specify an identity file
+#   IdentityFile ~/.ssh/id_ed25519_svds

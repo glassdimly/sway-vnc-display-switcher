@@ -1,0 +1,65 @@
+#!/bin/bash
+# kanshi-start — generate kanshi config from template and launch kanshi
+#
+# Sources conf via _lib.sh, discovers the runtime HEADLESS-N name, converts
+# position values from swaymsg syntax ("x y") to kanshi syntax ("x,y"),
+# substitutes variables into templates/kanshi.template via envsubst, writes
+# ~/.config/kanshi/config, then execs kanshi.
+#
+# Called from sway config: exec_always kanshi-start
+# To apply conf changes at runtime: swaymsg reload  (exec_always re-runs this)
+
+set -u
+
+# shellcheck source=_lib.sh
+. "$(dirname "$(readlink -f "$0")")/_lib.sh"
+svds_load_conf
+
+CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/sway-vnc-display-switcher"
+TEMPLATE="$CONF_DIR/templates/kanshi.template"
+KANSHI_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/kanshi/config"
+
+# PID file — lets the exec_always wrapper kill the previous instance on reload.
+# Without this, every sway reload accumulates a new kanshi-start process;
+# they fight over kanshi via pkill and kanshi never stays up.
+#
+# NOTE: we use exec kanshi below, which replaces this bash process with the
+# kanshi binary. The PID in the file therefore becomes kanshi's PID directly.
+# Killing via the pidfile = killing kanshi cleanly.
+_KS_PIDFILE="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/kanshi-start.pid"
+echo $$ > "$_KS_PIDFILE"
+
+# Discover runtime headless name (handles HEADLESS-1 → HEADLESS-N after unplug/create).
+# If no headless exists, svds_ensure_headless creates one and discovers the name.
+svds_ensure_headless
+
+# Export variables for envsubst template substitution
+export PHYSICAL_OUTPUT HEADLESS_OUTPUT MONITOR_DESC MONITOR_RES
+export HEADLESS_RES HEADLESS_SCALE
+
+# Convert "x y" → "x,y" for kanshi position syntax
+export PHYSICAL_POS_K="${PHYSICAL_POS// /,}"
+export HEADLESS_POS_K="${HEADLESS_POS// /,}"
+
+# Give Sway time to initialize outputs
+sleep 1.5
+
+# Generate kanshi config from template
+if [ ! -f "$TEMPLATE" ]; then
+    echo "Error: kanshi template not found at $TEMPLATE" >&2
+    exit 1
+fi
+
+mkdir -p "$(dirname "$KANSHI_CONFIG")"
+envsubst < "$TEMPLATE" > "$KANSHI_CONFIG"
+
+# Remove stale socket so kanshi can bind on restart.
+# When kanshi is killed ungracefully the socket file persists and the next
+# invocation fails to bind and exits immediately.
+rm -f "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/fr.emersion.kanshi."*
+
+# exec replaces this bash process with kanshi — no subshell, no watchdog loop.
+# The PID file written above now points directly to the kanshi binary.
+# The exec_always wrapper kills this PID on the next sway reload, which sends
+# SIGTERM to kanshi, which exits cleanly and frees the socket.
+exec kanshi

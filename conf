@@ -1,0 +1,31 @@
+# sway-vnc-display-switcher configuration
+# Generated for mothership — edit as needed.
+
+PHYSICAL_OUTPUT="HDMI-A-1"
+HEADLESS_OUTPUT="HEADLESS-1"
+VNC_ADDR="127.0.0.1"
+VNC_PORT="5900"
+VNC_SSH_HOST="jeremy@192.168.1.137"
+VNC_LOG="${XDG_STATE_HOME:-$HOME/.local/state}/sway-vnc/vnc.log"
+WAYBAR_SIGNAL="8"
+TERMINAL="kitty"
+DROPDOWN_SHELL="/usr/bin/zsh"
+DROPDOWN_WIDTH="100ppt"
+DROPDOWN_HEIGHT="80ppt"
+KEY_MIGRATE_PHYSICAL="Mod4+ctrl+d"
+KEY_MIGRATE_HEADLESS="Mod4+ctrl+n"
+KEY_DROPDOWN="Control+Shift+Space"
+MONITOR_DESC="Dell Inc. DELL U2717D 67YGV87EBWAL"
+MONITOR_RES="2560x1440"
+HEADLESS_RES="3456x2064"
+HEADLESS_SCALE="2"
+
+# Output positions (x y) — must match kanshi config.
+# Both outputs stay active at all times; ws-migrate locks these on every call.
+PHYSICAL_POS="0 0"
+HEADLESS_POS="2560 0"
+
+# USB hub path suffix for EDID-preserving KVM detection.
+# GenesysLogic USB2.1 Hub (usb3/3-2) — appears on KVM switch TO this machine.
+# Confirmed via: udevadm monitor --kernel --subsystem-match=usb
+KVM_USB_HUB="3-2"

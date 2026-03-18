@@ -1,0 +1,30 @@
+// sway-vnc-display-switcher — waybar config snippet
+//
+// Merge this into your ~/.config/waybar/config.jsonc.
+//
+// 1. Add "custom/display" to your modules-right array.
+// 2. Add the module definition below.
+// 3. Update your sway/workspaces format (optional but recommended).
+//
+// The signal number must match WAYBAR_SIGNAL in your conf (default: 8).
+
+// ── Add to modules-right ─────────────────────────────────────────────────────
+//
+//   "custom/display",
+
+// ── Module definition ─────────────────────────────────────────────────────────
+"custom/display": {
+    "exec": "~/.config/waybar/display.sh",
+    "return-type": "json",
+    "interval": 5,
+    "signal": __WAYBAR_SIGNAL__,
+    "on-click": "~/.config/waybar/display-menu.sh",
+    "tooltip": true
+},
+
+// ── Workspace format (shows which output each workspace is on) ────────────────
+"sway/workspaces": {
+    "disable-scroll": true,
+    "all-outputs": true,
+    "format": "{index}[{output}]"
+}

@@ -1,0 +1,26 @@
+# sway-vnc-display-switcher — dropdown terminal snippet
+#
+# Merge into your ~/.config/sway/config.
+#
+# install.sh substitutes __TERMINAL__, __DROPDOWN_SHELL__, and __KEY_DROPDOWN__
+# from your conf.
+#
+# The no_focus rule is critical: without it, the hidden scratchpad window steals
+# keyboard focus on sway reload, making the session appear frozen.
+
+# ── Launch on startup ─────────────────────────────────────────────────────────
+# Note: the pipe runs in /bin/sh (POSIX sh), not bash — this is intentional.
+# exec_always requires a single command; the pipe is valid portable sh syntax.
+exec_always swaymsg -t get_tree | grep -q '"app_id": "dropdown"' \
+    || __TERMINAL__ --class dropdown __DROPDOWN_SHELL__
+
+# ── Window rules ──────────────────────────────────────────────────────────────
+no_focus [app_id="dropdown"]
+for_window [app_id="dropdown"] {
+    floating enable
+    move position 0 0
+    move scratchpad
+}
+
+# ── Toggle keybinding ─────────────────────────────────────────────────────────
+bindsym __KEY_DROPDOWN__ exec ~/.config/sway/dropdown.sh

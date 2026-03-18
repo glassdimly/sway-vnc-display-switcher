@@ -1,0 +1,34 @@
+# sway-vnc-display-switcher — kanshi config template
+#
+# Merge these profiles into your ~/.config/kanshi/config.
+#
+# install.sh substitutes all __PLACEHOLDERS__ from your conf.
+#
+# Find your monitor description:
+#   swaymsg -t get_outputs | python3 -m json.tool | grep '"description"'
+#
+# Architecture notes:
+#   - Both outputs are always enabled and sit side by side in compositor space:
+#     PHYSICAL_OUTPUT at PHYSICAL_POS (default 0,0) and
+#     HEADLESS_OUTPUT at HEADLESS_POS (default 2560,0).
+#   - HEADLESS_OUTPUT is always present (created at Sway startup).
+#   - wayvnc always captures one output at a time; ws-migrate switches it live
+#     via wayvncctl output-set.
+#   - For EDID-preserving KVMs: Sway sees no DRM events on KVM switch.
+#     Detection is via USB hub udev events (KVM_USB_HUB in conf).
+#     output-watcher handles this — kanshi profiles are only for physical
+#     monitor connect/disconnect (e.g. hotplug, not KVM).
+
+# ── Docked: physical monitor + headless both present ─────────────────────────
+profile docked {
+    output "__MONITOR_DESC__" mode __MONITOR_RES__ position 0,0
+    output __HEADLESS_OUTPUT__ mode __MONITOR_RES__ position 2560,0
+    # Wait for KVM/EDID to settle, then migrate all workspaces to physical output
+    exec sleep 1.5 && swaymsg output __PHYSICAL_OUTPUT__ mode __MONITOR_RES__ && sleep 0.3 && ws-migrate hdmi
+}
+
+# ── Headless: no physical monitor (VNC only) ──────────────────────────────────
+profile headless {
+    output __HEADLESS_OUTPUT__ mode __MONITOR_RES__ position 0,0
+    exec ws-migrate headless
+}

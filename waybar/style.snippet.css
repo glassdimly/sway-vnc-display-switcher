@@ -1,0 +1,19 @@
+/* sway-vnc-display-switcher — waybar style snippet
+ *
+ * Merge into your ~/.config/waybar/style.css.
+ *
+ * Teal  = physical monitor active (class: hdmi)
+ * Orange = headless/VNC active   (class: headless)
+ *
+ * Adjust colors and font-size to match your theme.
+ */
+
+#custom-display {
+    font-size: 18px;
+    color: #2dd4bf;     /* teal — physical monitor */
+    padding: 0 12px;
+}
+
+#custom-display.headless {
+    color: #fb923c;     /* orange — headless/VNC */
+}

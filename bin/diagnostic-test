@@ -1,0 +1,261 @@
+#!/bin/bash
+# diagnostic-test — sway-vnc-display-switcher live diagnostic tests
+#
+# Runs a series of checks against the live system and prints PASS/FAIL/SKIP
+# for each. Useful after a migration or when diagnosing a problem.
+#
+# Exit code: 0 if all pass (or only skips), 1 if any fail.
+#
+# Usage: diag-test
+
+set -u
+
+# ── Colors ────────────────────────────────────────────────────────────────────
+if [ -t 1 ]; then
+    R='\033[0;31m' G='\033[0;32m' Y='\033[0;33m' B='\033[1m' N='\033[0m'
+else
+    R='' G='' Y='' B='' N=''
+fi
+
+_np=0; _nf=0; _ns=0
+_PASS() { printf "  [${G}PASS${N}] %s\n" "$*"; _np=$(( _np + 1 )); }
+_FAIL() { printf "  [${R}FAIL${N}] %s\n" "$*"; _nf=$(( _nf + 1 )); }
+_SKIP() { printf "  [${Y}SKIP${N}] %s\n" "$*"; _ns=$(( _ns + 1 )); }
+_HDR()  { printf "\n${B}%s${N}\n" "$*"; }
+
+# ── Load conf ─────────────────────────────────────────────────────────────────
+_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/sway-vnc-display-switcher/conf"
+[[ -f "$_CONF" && "$(stat -c %u "$_CONF")" == "$(id -u)" ]] && source "$_CONF"
+unset _CONF
+
+PHYSICAL_OUTPUT="${PHYSICAL_OUTPUT:-HDMI-A-1}"
+HEADLESS_OUTPUT="${HEADLESS_OUTPUT:-HEADLESS-1}"
+PHYSICAL_POS="${PHYSICAL_POS:-0 0}"
+HEADLESS_POS="${HEADLESS_POS:-2560 0}"
+HEADLESS_RES="${HEADLESS_RES:-2560x1440}"
+HEADLESS_SCALE="${HEADLESS_SCALE:-1}"
+VNC_ADDR="${VNC_ADDR:-127.0.0.1}"
+VNC_PORT="${VNC_PORT:-5900}"
+KVM_USB_HUB="${KVM_USB_HUB:-}"
+WS_MAX="${WS_MAX:-10}"
+
+printf "${B}=== sway-vnc-display-switcher tests ===${N}  %s\n" "$(date '+%Y-%m-%d %H:%M:%S')"
+
+# ── Gather state once ─────────────────────────────────────────────────────────
+_OUTPUTS=$(swaymsg -t get_outputs 2>/dev/null)
+_WORKSPACES=$(swaymsg -t get_workspaces 2>/dev/null)
+_INPUTS=$(swaymsg -t get_inputs 2>/dev/null)
+
+# Parse output geometry into shell variables (PHYS_* and HEAD_*)
+eval "$(echo "$_OUTPUTS" \
+| PHYSICAL="$PHYSICAL_OUTPUT" HEADLESS="$HEADLESS_OUTPUT" python3 -c "
+import json, sys, os
+physical = os.environ['PHYSICAL']
+headless = os.environ['HEADLESS']
+try:
+    outputs = json.load(sys.stdin)
+except:
+    print('PARSE_OUTPUTS_ERR=1'); sys.exit(0)
+for o in outputs:
+    n = o['name']
+    pfx = 'PHYS' if n == physical else 'HEAD' if n == headless else None
+    if not pfx: continue
+    act   = str(o.get('active', False)).lower()
+    dpms  = str(o.get('dpms', True)).lower()
+    x, y  = o['rect']['x'], o['rect']['y']
+    scale = o.get('scale', 1.0)
+    scale = int(scale) if scale == int(scale) else scale
+    print(f'{pfx}_ACTIVE={act}')
+    print(f'{pfx}_DPMS={dpms}')
+    print(f'{pfx}_X={x}')
+    print(f'{pfx}_Y={y}')
+    print(f'{pfx}_SCALE={scale}')
+")"
+
+# Parse workspace state into shell variables (WS_*)
+eval "$(echo "$_WORKSPACES" \
+| PHYSICAL="$PHYSICAL_OUTPUT" HEADLESS="$HEADLESS_OUTPUT" WS_MAX="$WS_MAX" python3 -c "
+import json, sys, os
+physical = os.environ['PHYSICAL']
+headless = os.environ['HEADLESS']
+ws_max   = int(os.environ.get('WS_MAX', '10'))
+try:
+    ws = json.load(sys.stdin)
+except:
+    print('PARSE_WS_ERR=1'); sys.exit(0)
+focused_out  = next((w['output'] for w in ws if w.get('focused')), None)
+mode         = 'headless' if focused_out == headless else 'hdmi' if focused_out == physical else 'unknown'
+target       = headless if mode == 'headless' else physical
+parking      = physical if mode == 'headless' else headless
+target_ws    = [w['num'] for w in ws if w.get('output') == target  and 1 <= w.get('num',-1) <= ws_max]
+stragglers   = [w['num'] for w in ws if w.get('output') == parking and 1 <= w.get('num',-1) <= ws_max]
+high_parking = [w['num'] for w in ws if w.get('output') == parking and w.get('num',-1) > ws_max]
+print(f'WS_MODE={mode}')
+print(f'WS_TARGET={target}')
+print(f'WS_PARKING={parking}')
+print(f'WS_TARGET_COUNT={len(target_ws)}')
+print(f'WS_STRAGGLER_COUNT={len(stragglers)}')
+print(f'WS_STRAGGLERS={\" \".join(str(n) for n in stragglers)}')
+print(f'WS_HIGH_PARKING={\" \".join(str(n) for n in high_parking)}')
+")"
+
+# ── Test 1: Outputs active ────────────────────────────────────────────────────
+_HDR "1. Outputs active"
+[[ "${PHYS_ACTIVE:-false}" == "true" ]] \
+    && _PASS "$PHYSICAL_OUTPUT is active" \
+    || _FAIL "$PHYSICAL_OUTPUT is not active"
+[[ "${HEAD_ACTIVE:-false}" == "true" ]] \
+    && _PASS "$HEADLESS_OUTPUT is active" \
+    || _FAIL "$HEADLESS_OUTPUT is not active"
+[[ "${HEAD_DPMS:-true}" == "true" ]] \
+    && _PASS "$HEADLESS_OUTPUT DPMS is on" \
+    || _FAIL "$HEADLESS_OUTPUT DPMS is off — VNC will show a black screen"
+
+# ── Test 2: Scale ─────────────────────────────────────────────────────────────
+_HDR "2. Scale"
+[[ "${HEAD_SCALE:-?}" == "$HEADLESS_SCALE" ]] \
+    && _PASS "$HEADLESS_OUTPUT scale = $HEADLESS_SCALE" \
+    || _FAIL "$HEADLESS_OUTPUT scale = ${HEAD_SCALE:-?}  (expected $HEADLESS_SCALE — cursor math will be wrong)"
+
+# ── Test 3: No overlap ────────────────────────────────────────────────────────
+_HDR "3. Output positions — no overlap"
+if [[ "${HEAD_X:-?}" == "${PHYS_X:-?}" && "${HEAD_Y:-?}" == "${PHYS_Y:-?}" ]]; then
+    _FAIL "Outputs are OVERLAPPING at (${PHYS_X},${PHYS_Y}) — gray screen / frozen input condition"
+else
+    _PASS "$HEADLESS_OUTPUT=(${HEAD_X},${HEAD_Y})  $PHYSICAL_OUTPUT=(${PHYS_X},${PHYS_Y})  — not overlapping"
+fi
+
+# ── Test 4: Correct positions for mode ───────────────────────────────────────
+_HDR "4. Output positions — correct for mode (${WS_MODE:-unknown})"
+if [[ "${WS_MODE:-unknown}" == "headless" ]]; then
+    [[ "${HEAD_X:-?}" == "0" && "${HEAD_Y:-?}" == "0" ]] \
+        && _PASS "$HEADLESS_OUTPUT at (0,0)" \
+        || _FAIL "$HEADLESS_OUTPUT at (${HEAD_X},${HEAD_Y})  expected (0,0)"
+    _exp_px=$(( ${HEADLESS_RES%%x*} / HEADLESS_SCALE ))
+    [[ "${PHYS_X:-?}" == "$_exp_px" && "${PHYS_Y:-?}" == "0" ]] \
+        && _PASS "$PHYSICAL_OUTPUT at (${PHYS_X},0)" \
+        || _FAIL "$PHYSICAL_OUTPUT at (${PHYS_X},${PHYS_Y})  expected (${_exp_px},0)"
+
+elif [[ "${WS_MODE:-unknown}" == "hdmi" ]]; then
+    _ppx="${PHYSICAL_POS%% *}"; _ppy="${PHYSICAL_POS##* }"
+    _hpx="${HEADLESS_POS%% *}";  _hpy="${HEADLESS_POS##* }"
+    [[ "${PHYS_X:-?}" == "$_ppx" && "${PHYS_Y:-?}" == "$_ppy" ]] \
+        && _PASS "$PHYSICAL_OUTPUT at (${PHYS_X},${PHYS_Y})" \
+        || _FAIL "$PHYSICAL_OUTPUT at (${PHYS_X},${PHYS_Y})  expected ($PHYSICAL_POS)"
+    [[ "${HEAD_X:-?}" == "$_hpx" && "${HEAD_Y:-?}" == "$_hpy" ]] \
+        && _PASS "$HEADLESS_OUTPUT at (${HEAD_X},${HEAD_Y})" \
+        || _FAIL "$HEADLESS_OUTPUT at (${HEAD_X},${HEAD_Y})  expected ($HEADLESS_POS)"
+else
+    _SKIP "Mode unknown — cannot check positions"
+fi
+
+# ── Test 5: Workspace distribution ───────────────────────────────────────────
+_HDR "5. Workspaces (mode: ${WS_MODE:-unknown})"
+if [[ "${WS_MODE:-unknown}" == "unknown" ]]; then
+    _SKIP "Mode unknown — cannot check workspace distribution"
+else
+    _PASS "Mode: ${WS_MODE}  (focused on ${WS_TARGET:-?})  —  ${WS_TARGET_COUNT:-0} user ws on target"
+
+    [[ "${WS_STRAGGLER_COUNT:-0}" == "0" ]] \
+        && _PASS "No numbered stragglers (ws 1..$WS_MAX) on parking output" \
+        || _FAIL "Straggler ws on ${WS_PARKING:-?}: ${WS_STRAGGLERS}"
+
+    [[ -z "${WS_HIGH_PARKING:-}" ]] \
+        && _PASS "No auto-created high-numbered ws on parking output" \
+        || _FAIL "Auto-created parking ws (num > $WS_MAX) on ${WS_PARKING:-?}: ${WS_HIGH_PARKING}"
+fi
+
+# ── Test 6: wayvnc ────────────────────────────────────────────────────────────
+_HDR "6. wayvnc"
+_vnc_pid=$(pgrep -x wayvnc 2>/dev/null | head -1)
+[[ -n "$_vnc_pid" ]] \
+    && _PASS "wayvnc running (PID $_vnc_pid)" \
+    || _FAIL "wayvnc NOT running"
+
+if wayvncctl output-list 2>/dev/null | grep -q "^\* ${HEADLESS_OUTPUT}:"; then
+    _PASS "wayvnc capturing $HEADLESS_OUTPUT"
+else
+    _active=$(wayvncctl output-list 2>/dev/null | grep '^\* ' | head -1 | xargs)
+    _FAIL "wayvnc NOT capturing $HEADLESS_OUTPUT  (active: ${_active:-unavailable})"
+fi
+
+if ss -tlnH "sport = :$VNC_PORT" 2>/dev/null | grep -q '.'; then
+    _PASS "VNC port :${VNC_PORT} is listening"
+else
+    _FAIL "VNC port :${VNC_PORT} is NOT listening"
+fi
+
+# ── Test 7: Processes ─────────────────────────────────────────────────────────
+_HDR "7. Processes"
+_ow_pid=$(pgrep -f "output-watcher" 2>/dev/null | grep -v grep | head -1)
+[[ -n "$_ow_pid" ]] \
+    && _PASS "output-watcher running (PID $_ow_pid)" \
+    || _FAIL "output-watcher NOT running"
+
+_LOCK="${XDG_RUNTIME_DIR:-/run/user/${UID}}/ws-migrate.lock"
+if [[ ! -e "$_LOCK" ]]; then
+    _PASS "ws-migrate lock absent (not running)"
+elif flock -n "$_LOCK" true 2>/dev/null; then
+    _PASS "ws-migrate lock present, not held (idle)"
+else
+    _FAIL "ws-migrate lock is HELD — migration in progress or crashed"
+fi
+
+# ── Test 8: USB hub vs mode consistency ──────────────────────────────────────
+_HDR "8. KVM / USB hub consistency"
+if [[ -z "$KVM_USB_HUB" ]]; then
+    _SKIP "KVM_USB_HUB not configured"
+else
+    _hub_present=false
+    [[ -e "/sys/bus/usb/devices/${KVM_USB_HUB}" ]] && _hub_present=true
+
+    if [[ "$_hub_present" == "true" && "${WS_MODE:-unknown}" == "hdmi" ]]; then
+        _PASS "Hub present and mode is hdmi — consistent"
+    elif [[ "$_hub_present" == "false" && "${WS_MODE:-unknown}" == "headless" ]]; then
+        _PASS "Hub absent and mode is headless — consistent"
+    elif [[ "${WS_MODE:-unknown}" == "unknown" ]]; then
+        _SKIP "Mode unknown — cannot verify consistency"
+    else
+        _hub_s=$( [[ "$_hub_present" == "true" ]] && echo "present" || echo "absent" )
+        _FAIL "Hub is $_hub_s but mode is ${WS_MODE} — output-watcher may not have fired yet"
+    fi
+fi
+
+# ── Test 9: Virtual pointer ───────────────────────────────────────────────────
+_HDR "9. Virtual pointer"
+_vp_raw=$(echo "$_INPUTS" | HEADLESS="$HEADLESS_OUTPUT" python3 -c "
+import json, sys, os
+headless = os.environ['HEADLESS']
+try:
+    inputs = json.load(sys.stdin)
+except:
+    print('error|'); sys.exit(0)
+vp = next((i for i in inputs if 'virtual_pointer' in i.get('identifier','').lower()), None)
+if not vp:
+    print('missing|'); sys.exit(0)
+mapped = vp.get('mapped_to_output') or ''
+print(f'{vp[\"identifier\"]}|{mapped}')
+")
+_vp_id=$(echo "$_vp_raw" | cut -d'|' -f1)
+_vp_mapped=$(echo "$_vp_raw" | cut -d'|' -f2)
+
+if [[ "$_vp_id" == "missing" ]]; then
+    _SKIP "No virtual pointer device found"
+elif [[ "$_vp_id" == "error" ]]; then
+    _FAIL "Could not parse input devices"
+elif [[ "${WS_MODE:-unknown}" == "headless" ]]; then
+    [[ "$_vp_mapped" == "$HEADLESS_OUTPUT" ]] \
+        && _PASS "Virtual pointer mapped to $HEADLESS_OUTPUT" \
+        || _FAIL "Virtual pointer mapped to '${_vp_mapped:-none}'  expected $HEADLESS_OUTPUT  (cursor will drift off-screen)"
+elif [[ "${WS_MODE:-unknown}" == "hdmi" ]]; then
+    [[ -z "$_vp_mapped" ]] \
+        && _PASS "Virtual pointer unmapped (full layout) — correct for hdmi mode" \
+        || _SKIP "Virtual pointer mapped to '$_vp_mapped' in hdmi mode (not necessarily wrong)"
+else
+    _SKIP "Mode unknown — virtual pointer mapped to '${_vp_mapped:-none}'"
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+printf "\n${B}Results:${N}  ${G}%d passed${N}  ${R}%d failed${N}  ${Y}%d skipped${N}\n\n" \
+    "$_np" "$_nf" "$_ns"
+[[ "$_nf" -eq 0 ]]

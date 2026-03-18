@@ -1,0 +1,96 @@
+# sway-vnc-display-switcher configuration
+# Copy to ~/.config/sway-vnc-display-switcher/conf and edit.
+# All values below are the defaults — only set what you need to change.
+
+# ── Outputs ───────────────────────────────────────────────────────────────────
+
+# Your physical monitor's output name.
+# Find it: swaymsg -t get_outputs | python3 -m json.tool | grep '"name"'
+PHYSICAL_OUTPUT="HDMI-A-1"
+
+# Headless virtual output name (wlroots default, rarely needs changing).
+HEADLESS_OUTPUT="HEADLESS-1"
+
+# Output positions (x y) — must match your kanshi config.
+# Both outputs are always enabled and sit side by side in compositor space.
+# ws-migrate locks these positions on every call to prevent cursor bleed.
+PHYSICAL_POS="0 0"
+HEADLESS_POS="2560 0"   # set to your physical monitor's width
+
+# ── VNC ───────────────────────────────────────────────────────────────────────
+
+# wayvnc bind address — keep 127.0.0.1 to require SSH tunnel (recommended).
+VNC_ADDR="127.0.0.1"
+
+# wayvnc port.
+VNC_PORT="5900"
+
+# SSH host shown in the vnc-serve startup message and used by client/connect.sh.
+# Format: user@hostname or user@ip
+VNC_SSH_HOST="user@hostname"
+
+# Log file when vnc-serve is backgrounded (e.g. launched from waybar menu).
+VNC_LOG="/tmp/sway-vnc-display-switcher.log"
+
+# ── Waybar ────────────────────────────────────────────────────────────────────
+
+# Signal number for waybar display module refresh (pkill -RTMIN+N waybar).
+# Must match the "signal" value in your waybar config.jsonc custom/display block.
+WAYBAR_SIGNAL="8"
+
+# ── Workspaces ────────────────────────────────────────────────────────────────
+
+# Highest numbered workspace to migrate. ws-migrate and display-menu.sh
+# only move workspaces with numbers 1..WS_MAX. Increase if you use more.
+WS_MAX="10"
+
+# ── Dropdown terminal ─────────────────────────────────────────────────────────
+
+# Terminal emulator. Must support --class <name> to set the app_id.
+# Known working: kitty, foot, alacritty (with --class), wezterm
+TERMINAL="kitty"
+
+# Shell to run inside the dropdown terminal.
+DROPDOWN_SHELL="/bin/bash"
+
+# Dropdown dimensions (sway resize syntax: px or ppt).
+DROPDOWN_WIDTH="100ppt"
+DROPDOWN_HEIGHT="65ppt"
+
+# ── Keybindings ───────────────────────────────────────────────────────────────
+
+# These are used by the sway config snippets. Mod4 = Super.
+KEY_MIGRATE_PHYSICAL="Mod4+ctrl+d"
+KEY_MIGRATE_HEADLESS="Mod4+ctrl+n"
+KEY_DROPDOWN="Control+Shift+Space"
+KEY_DROPDOWN_2=""                    # optional second keybinding for dropdown (e.g. "Mod4+Shift+Space")
+
+# ── Kanshi ────────────────────────────────────────────────────────────────────
+
+# Monitor description string for the kanshi docked profile.
+# Find it: swaymsg -t get_outputs | python3 -m json.tool | grep '"description"'
+# Format:  "Make Model Serial"  (include the quotes in the kanshi config)
+MONITOR_DESC=""
+
+# Monitor resolution used in kanshi profiles and the docked mode-force command.
+MONITOR_RES="2560x1440"
+
+# Headless virtual output resolution. Can differ from MONITOR_RES — useful to
+# give the VNC output slightly more vertical space than the physical monitor.
+# ws-migrate and kanshi-start enforce these modes on every output change.
+HEADLESS_RES="3456x2160"
+
+# ── KVM detection ─────────────────────────────────────────────────────────────
+
+# USB hub path suffix for EDID-preserving KVM detection.
+# Many KVMs preserve EDID and HPD so Sway never fires output events on switch.
+# Instead, output-watcher watches udev USB kernel events for the KVM hub.
+#
+# To find your KVM's USB hub path:
+#   udevadm monitor --kernel --subsystem-match=usb
+#   (then switch the KVM — look for add/remove lines and note the path)
+#
+# Set to the path component(s) that uniquely identify the KVM hub.
+# Example: "1-6/1-6.4"  matches  /devices/.../1-6/1-6.4 (usb)
+# Leave blank to disable USB detection (Sway output events only).
+KVM_USB_HUB=""

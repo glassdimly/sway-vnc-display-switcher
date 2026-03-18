@@ -1,0 +1,186 @@
+#!/bin/bash
+# output-watcher — event-driven workspace migration on KVM/output state changes
+#
+# Two watchers run in parallel:
+#
+#  1. USB (primary, for EDID-preserving KVMs):
+#     Watches udev USB kernel events for the KVM hub device.
+#     KVM_USB_HUB in conf is the path suffix of the hub (e.g. "1-6/1-6.4").
+#       remove → ws-migrate headless
+#       add    → ws-migrate hdmi  (after 1.5s settle delay)
+#
+#  2. Sway output events (secondary, for EDID-dropping KVMs):
+#     Queries get_outputs on each event; if PHYSICAL_OUTPUT active state
+#     changes, migrates accordingly.
+#
+# Config: ~/.config/sway-vnc-display-switcher/conf
+# Docs:   ~/.config/opencode/docs/remote-desktop.md
+
+set -u
+
+# ── Logging (must be set before _lib.sh for svds_log) ────────────────────────
+_LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/sway-vnc"
+_LOG_FILE="$_LOG_DIR/output-watcher.log"
+mkdir -p "$_LOG_DIR"
+
+# Re-exec under setsid so this script becomes a session/process-group leader.
+# This means kill -- -$$ will reap ALL child processes (background subshells,
+# udevadm pipes, swaymsg pipes) when the trap fires — no orphans on reload.
+if [ "$$" != "$(ps -o pgid= -p $$ | tr -d ' ')" ]; then
+    exec setsid "$0" "$@"
+fi
+
+# PID file stores our PGID so the exec_always restart wrapper can kill the
+# entire process group without relying on pkill pattern-matching (which would
+# accidentally match the wrapper bash itself and kill it before we start).
+_PIDFILE="${XDG_RUNTIME_DIR:-/tmp}/output-watcher.pgid"
+echo "$$" > "$_PIDFILE"
+
+# shellcheck source=_lib.sh
+. "$(dirname "$(readlink -f "$0")")/_lib.sh"
+svds_load_conf
+
+# ── USB watcher (EDID-preserving KVMs) ───────────────────────────────────────
+# Watches udev USB kernel events for add/remove of the KVM hub.
+# Runs forever (udevadm doesn't exit on sway reload).
+_usb_watcher() {
+    [ -z "$KVM_USB_HUB" ] && return
+
+    local last_action=""
+
+    udevadm monitor --kernel --subsystem-match=usb 2>/dev/null \
+    | while IFS= read -r line; do
+        [ -z "$line" ] && continue
+
+        # Match lines like:
+        #   KERNEL[...] remove   /devices/.../1-6/1-6.4 (usb)
+        #   KERNEL[...] add      /devices/.../1-6/1-6.4 (usb)
+        # Only the hub itself (path ends with /$KVM_USB_HUB), not its children.
+        [[ "$line" =~ (add|remove)[[:space:]].*/${KVM_USB_HUB}[[:space:]] ]] || continue
+
+        action="${BASH_REMATCH[1]}"
+        [ "$action" = "$last_action" ] && continue
+        last_action="$action"
+        svds_log "USB: hub event detected: action=$action"
+
+        if [ "$action" = "add" ]; then
+            svds_log "USB: KVM hub added — migrating to hdmi (after 1.5s settle)"
+            sleep 1.5
+            svds_log "USB: calling ws-migrate hdmi"
+            ws-migrate hdmi 2>/dev/null || true
+        else
+            svds_log "USB: KVM hub removed — migrating to headless"
+            svds_log "USB: calling ws-migrate headless"
+            ws-migrate headless 2>/dev/null || true
+        fi
+    done
+}
+
+# ── Sway output watcher (EDID-dropping KVMs) ─────────────────────────────────
+# NOTE: sway output events only carry {"change":"unspecified"} — no per-output
+# fields. Query get_outputs on every event to detect actual state changes.
+_read_sway_state() {
+    PHYSICAL_OUTPUT="$PHYSICAL_OUTPUT" swaymsg -t get_outputs 2>/dev/null | python3 -c "
+import json, sys, os
+try:
+    for o in json.load(sys.stdin):
+        if o['name'] == os.environ['PHYSICAL_OUTPUT']:
+            print('1' if o.get('active', False) else '0')
+            sys.exit(0)
+except Exception:
+    pass
+print('0')
+"
+}
+
+_sway_watcher() {
+    local last_active=""
+    last_active=$(_read_sway_state)  # snapshot state before the subscribe loop starts
+
+    swaymsg -t subscribe '["output"]' 2>/dev/null | while IFS= read -r line; do
+        [ -z "$line" ] && continue
+
+        active=$(_read_sway_state)
+        [ "$active" = "$last_active" ] && continue  # no change, nothing to do
+
+        # Potential state change detected — debounce before acting.
+        #
+        # Problem: ws-migrate calls swaymsg output commands that cause sway to
+        # return active=False for PHYSICAL_OUTPUT transiently during reconfiguration
+        # (~50-200ms). Without debounce, the watcher would see "1→0", call
+        # ws-migrate in the opposite direction, and the two concurrent calls would
+        # race on output position commands — leaving both outputs at 0,0 (overlapping).
+        #
+        # Fix: wait 2s (> ws-migrate's full runtime of ~1.5s) then re-read. If the
+        # state change was transient it will have resolved; a real disconnect won't.
+        sleep 2
+        active=$(_read_sway_state)
+        [ "$active" = "$last_active" ] && continue  # was transient — ignore
+
+        # Confirmed real state change. Update last_active before migrating so that
+        # output events fired *during* the migration don't re-enter this branch.
+        last_active="$active"
+        svds_log "SWAY: output state changed: active=$active"
+
+        if [ "$active" = "1" ]; then
+            svds_log "SWAY: PHYSICAL_OUTPUT connected — migrating to hdmi (after 1.5s settle)"
+            sleep 1.5
+            svds_log "SWAY: calling ws-migrate hdmi"
+            ws-migrate hdmi 2>/dev/null || true
+        else
+            svds_log "SWAY: PHYSICAL_OUTPUT disconnected — migrating to headless"
+            ws-migrate headless 2>/dev/null || true
+        fi
+
+        # Re-sync last_active to the actual post-migration compositor state.
+        # ws-migrate may have left the output in a different active value than
+        # the one that triggered this branch (e.g. if it was skipped via flock).
+        # Without this re-sync, the next output event would see a false delta
+        # and fire another spurious migration.
+        last_active=$(_read_sway_state)
+    done
+}
+
+# ── Startup state check ──────────────────────────────────────────────────────
+# udevadm monitor only catches future events; it misses whatever already
+# happened before this process started (e.g. sway reload while KVM was already
+# switched away). Check the current USB hub presence and migrate immediately.
+_startup_check() {
+    [ -z "$KVM_USB_HUB" ] && return
+    sleep 1  # let sway settle after reload before touching workspaces
+    if [ -e "/sys/bus/usb/devices/${KVM_USB_HUB}" ]; then
+        svds_log "STARTUP: KVM hub present — migrating to hdmi"
+        ws-migrate hdmi 2>/dev/null || true
+    else
+        # Don't migrate to headless if no headless output exists (vnc-serve kill)
+        svds_get_headless
+        if [ -n "$HEADLESS_OUTPUT" ]; then
+            svds_log "STARTUP: KVM hub absent — migrating to headless"
+            ws-migrate headless 2>/dev/null || true
+        else
+            svds_log "STARTUP: KVM hub absent but no headless output — skipping migration"
+        fi
+    fi
+}
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+# Kill entire process group on exit — catches all background subshells,
+# udevadm/swaymsg pipes, and any nested children. No orphans on sway reload.
+trap 'rm -f "$_PIDFILE"; kill -9 -- -$$ 2>/dev/null; exit' EXIT INT TERM
+
+svds_log "output-watcher started (PID=$$, PHYSICAL=$PHYSICAL_OUTPUT, HEADLESS=$HEADLESS_OUTPUT, KVM_HUB=${KVM_USB_HUB:-<none>})"
+
+# Startup state check: background so watchers start immediately in parallel
+_startup_check &
+
+# USB watcher: background, loops forever
+if [ -n "$KVM_USB_HUB" ]; then
+    while true; do _usb_watcher; sleep 1; svds_log "USB: watcher restarted"; done &
+fi
+
+# Sway output watcher: foreground, restarts on sway reload
+while true; do
+    _sway_watcher
+    sleep 1
+    svds_log "SWAY: watcher restarted"
+done

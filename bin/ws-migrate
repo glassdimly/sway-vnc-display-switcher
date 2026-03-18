@@ -1,0 +1,198 @@
+#!/bin/bash
+# ws-migrate hdmi|headless
+#
+# Migrate all workspaces to the specified output and switch wayvnc capture to match.
+# Both outputs stay enabled at all times — no disabling. Positions are explicitly
+# locked on every call to prevent compositor repositioning.
+#
+# Layout (always):
+#   PHYSICAL_OUTPUT  (HDMI-A-1)  — position 0,0
+#   HEADLESS_OUTPUT  (HEADLESS-N) — position 2560,0
+#
+# Usage:
+#   ws-migrate hdmi      — move all workspaces to PHYSICAL_OUTPUT (docked/physical)
+#   ws-migrate headless  — move all workspaces to HEADLESS_OUTPUT (VNC/remote)
+
+set -u
+
+# shellcheck source=_lib.sh
+. "$(dirname "$(readlink -f "$0")")/_lib.sh"
+svds_load_conf
+svds_get_headless  # discover runtime HEADLESS-N name
+
+# Serialize concurrent calls — if another ws-migrate is already running, exit
+# immediately rather than racing on swaymsg output/workspace commands.
+# Race condition: output-watcher's sway event watcher can see a transient
+# active=False on PHYSICAL_OUTPUT during swaymsg reconfiguration and fire a
+# competing ws-migrate in the opposite direction, leaving outputs overlapping.
+_LOCK="${XDG_RUNTIME_DIR:-/run/user/${UID}}/ws-migrate.lock"
+exec {_lock_fd}>"$_LOCK"          # open lockfile; bash assigns a free fd into $lock_fd
+flock -n "$_lock_fd" || {          # -n: non-blocking — don't queue, just skip
+    echo "ws-migrate: already running, skipping ${1:-}" >&2
+    exit 0
+}
+# Lock is held until this process exits; no explicit unlock needed.
+
+command -v python3 >/dev/null 2>&1 || { echo "Error: python3 is required" >&2; exit 1; }
+
+TARGET="${1:-}"
+
+case "$TARGET" in
+    hdmi)
+        OUTPUT="$PHYSICAL_OUTPUT"
+        # Flip workspace-to-output preference back to physical-first so Sway
+        # auto-creates new workspaces on PHYSICAL_OUTPUT (not HEADLESS_OUTPUT).
+        for _i in $(seq 1 "$WS_MAX"); do
+            swaymsg "workspace $_i output $PHYSICAL_OUTPUT $HEADLESS_OUTPUT" 2>/dev/null || true
+        done
+        # ws 99 is the headless parking workspace — move it to HEADLESS_OUTPUT now
+        # that user workspaces are going to the physical screen.
+        swaymsg "workspace 99 output $HEADLESS_OUTPUT $PHYSICAL_OUTPUT" 2>/dev/null || true
+        swaymsg "workspace number 99; move workspace to output $HEADLESS_OUTPUT" 2>/dev/null || true
+        # Lock both outputs to their correct positions and modes before migrating.
+        # This is the fallback for when kanshi hasn't run yet (e.g. kanshi starting up).
+        # Kanshi owns output config in headless mode, so we only do this in hdmi mode.
+        swaymsg output "$PHYSICAL_OUTPUT" enable mode "$MONITOR_RES" position $PHYSICAL_POS 2>/dev/null || true
+        swaymsg output "$HEADLESS_OUTPUT" enable mode "$HEADLESS_RES" scale "$HEADLESS_SCALE" position $HEADLESS_POS 2>/dev/null || true
+        # Release virtual pointer confinement so the physical mouse (KVM back) has
+        # full layout access again.
+        swaymsg "input '0:0:wlr_virtual_pointer_v1' map_to_output *" 2>/dev/null || true
+        sleep 0.3
+        ;;
+    headless)
+        OUTPUT="$HEADLESS_OUTPUT"
+        # Bail if no headless output exists (e.g. after vnc-serve kill)
+        if [ -z "$HEADLESS_OUTPUT" ]; then
+            echo "ws-migrate: no headless output found — run 'vnc-serve start' first" >&2
+            exit 1
+        fi
+        # Flip workspace-to-output preference to headless-first so Sway
+        # auto-creates new workspaces on HEADLESS_OUTPUT (not PHYSICAL_OUTPUT).
+        for _i in $(seq 1 "$WS_MAX"); do
+            swaymsg "workspace $_i output $HEADLESS_OUTPUT $PHYSICAL_OUTPUT" 2>/dev/null || true
+        done
+        # ws 99 is the dedicated parking workspace for PHYSICAL_OUTPUT in headless
+        # mode. Sway requires every enabled output to have at least one visible
+        # workspace; by pinning ws 99 to PHYSICAL_OUTPUT we prevent sway from
+        # auto-creating a random numbered workspace there from the 1-WS_MAX range.
+        swaymsg "workspace 99 output $PHYSICAL_OUTPUT $HEADLESS_OUTPUT" 2>/dev/null || true
+        # Explicitly move ws 99 to PHYSICAL_OUTPUT now (IPC preference only affects
+        # future auto-creation; it won't move an already-existing workspace).
+        swaymsg "workspace number 99; move workspace to output $PHYSICAL_OUTPUT" 2>/dev/null || true
+        # Set output positions for headless mode.
+        # kanshi's headless profile never fires with EDID-preserving KVMs (HDMI-A-1
+        # stays "connected" so kanshi always matches the docked profile instead).
+        # We must set positions here; otherwise HEADLESS_OUTPUT stays at its docked
+        # position (2560,0) and at scale 1, making VNC appear tiny and off-screen.
+        swaymsg output "$HEADLESS_OUTPUT" enable mode "$HEADLESS_RES" scale "$HEADLESS_SCALE" position 0 0 2>/dev/null || true
+        # Park PHYSICAL_OUTPUT adjacent-right so the layout bounding box stays
+        # compact. Actual cursor confinement is handled by map_to_output below —
+        # the parking position no longer matters for cursor boundary.
+        _hl_pw="${HEADLESS_RES%%x*}"
+        _hl_lw=$(( _hl_pw / HEADLESS_SCALE ))
+        swaymsg output "$PHYSICAL_OUTPUT" enable position "$_hl_lw" 0 2>/dev/null || true
+        unset _hl_pw _hl_lw
+        # Confine the wayvnc virtual pointer to HEADLESS_OUTPUT so that
+        # zwlr_virtual_pointer_v1_motion_absolute normalizes against the headless
+        # bounding box instead of the full layout bounding box.
+        # Without this, wlroots maps the full VNC frame across the entire layout —
+        # cursor exits the headless output partway across.
+        # (wlroots: wlr_cursor_absolute_to_layout_coords uses output box when mapped)
+        swaymsg "input '0:0:wlr_virtual_pointer_v1' map_to_output $HEADLESS_OUTPUT" 2>/dev/null || true
+        sleep 0.3
+        ;;
+    *)
+        echo "Usage: ws-migrate hdmi|headless" >&2
+        exit 1
+        ;;
+esac
+
+# Move all numbered workspaces (1..WS_MAX) to target output, then restore focused workspace.
+# ws 99 (parking workspace) is excluded — it is managed by the case block above.
+# Prints focused_num to stdout so the straggler sweep can return to the right workspace.
+_FOCUSED_NUM=$(WS_JSON=$(swaymsg -t get_workspaces) OUTPUT="$OUTPUT" WS_MAX="$WS_MAX" python3 -c "
+import json, subprocess, os
+ws_data = json.loads(os.environ['WS_JSON'])
+output  = os.environ['OUTPUT']
+ws_max  = int(os.environ.get('WS_MAX', '10'))
+
+# Remember which workspace the user is on before we start cycling through them
+focused_num = next((w.get('num') for w in ws_data if w.get('focused')), None)
+
+for w in ws_data:
+    num = w.get('num', -1)
+    if not (1 <= num <= ws_max):
+        continue
+    subprocess.run(['swaymsg', f'workspace number {num}; move workspace to output {output}'], capture_output=True)
+
+# Land on the workspace the user was on (now on the target output)
+if focused_num is not None and 1 <= focused_num <= ws_max:
+    subprocess.run(['swaymsg', f'workspace number {focused_num}'], capture_output=True)
+    print(focused_num)
+else:
+    print('')
+" 2>/dev/null)
+
+# Straggler sweep — catch any workspaces left on the wrong output after the main loop.
+# ws 99 (parking workspace) is excluded from all checks.
+#
+# Root cause: the main loop calls `workspace number N; move workspace to output $OUTPUT`
+# for each workspace.  `workspace number N` makes ws N the active workspace on the parking
+# output, which displaces ws 99.  Sway prunes ws 99 (empty + no longer active), then
+# auto-creates a fresh workspace on the parking output to satisfy the per-output invariant.
+# That auto-created workspace is the straggler.
+#
+# Fix strategy:
+#   1. Re-anchor ws 99 on the parking output.  This makes the empty straggler non-active;
+#      sway prunes empty non-active workspaces, so it often disappears on its own.
+#   2. After re-anchor, sleep to let sway settle, then check for ANY non-ws-99 workspace
+#      on the parking output (covers all numbers, not just 1..WS_MAX).
+#   3. Move each straggler to the target output.
+#   4. Immediately switch to _FOCUSED_NUM on the target output.  This makes the just-moved
+#      straggler non-active on the target, so sway prunes it if it is empty.
+#   5. Re-anchor ws 99 again to deactivate any new auto-created workspace on the parking
+#      output, then loop back to step 2.
+_OTHER="$( [ "$TARGET" = headless ] && echo "$PHYSICAL_OUTPUT" || echo "$HEADLESS_OUTPUT" )"
+
+# Initial re-anchor before the first sweep check.
+swaymsg "workspace number 99; move workspace to output $_OTHER" 2>/dev/null || true
+
+for _i in 1 2; do
+    sleep 0.3
+    # Scan ALL workspaces on the parking output except ws 99 (catches numbers > WS_MAX too).
+    _stragglers=$(swaymsg -t get_workspaces 2>/dev/null \
+        | _OTHER="$_OTHER" python3 -c "
+import json, sys, os
+ws = json.load(sys.stdin)
+other = os.environ['_OTHER']
+nums = [str(w['num']) for w in ws if w.get('output') == other and w.get('num', -1) != 99]
+print(' '.join(nums))
+")
+    [ -z "$_stragglers" ] && break
+    for _num in $_stragglers; do
+        swaymsg "workspace number $_num; move workspace to output $OUTPUT" 2>/dev/null || true
+    done
+    # Switch to focused_num: activates the user's real workspace on the target output,
+    # making the just-moved straggler non-active so sway prunes it if it is empty.
+    [ -n "$_FOCUSED_NUM" ] && swaymsg "workspace number $_FOCUSED_NUM" 2>/dev/null || true
+    # Re-anchor ws 99: makes any newly auto-created workspace on the parking output
+    # non-active so sway can prune it before the next iteration checks.
+    swaymsg "workspace number 99; move workspace to output $_OTHER" 2>/dev/null || true
+done
+unset _OTHER _i _stragglers _num
+
+# Return to user's workspace — the sweep may have left focus on ws 99.
+[ -n "$_FOCUSED_NUM" ] && swaymsg "workspace number $_FOCUSED_NUM" 2>/dev/null || true
+unset _FOCUSED_NUM
+
+# Focus the target output as a final fallback.
+swaymsg "focus output $OUTPUT"
+
+# Always keep wayvnc capturing the headless output regardless of migration direction.
+# Switching capture to HDMI-A-1 sends a display-resize event to the VNC client
+# which can freeze input; since VNC is only used remotely we never need to
+# redirect it away from the headless output.
+wayvncctl output-set "$HEADLESS_OUTPUT" 2>/dev/null || true
+
+# Refresh waybar display module
+pkill -RTMIN+"$WAYBAR_SIGNAL" waybar 2>/dev/null || true
