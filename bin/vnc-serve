@@ -122,7 +122,6 @@ case "${1:-start}" in
 
         # Restart supporting daemons if they were killed by vnc-serve kill
         _restart_kanshi
-        sleep 1  # let kanshi apply profiles before output-watcher starts
         _restart_output_watcher
 
         echo "Starting wayvnc on $HEADLESS_OUTPUT..."
@@ -158,9 +157,12 @@ case "${1:-start}" in
             # this call, all workspaces stay stranded on HDMI-A-1 (dark/inaccessible)
             # and VNC shows an empty HEADLESS-1. ws-migrate is idempotent — calling it
             # twice (kanshi + here) is harmless.
-            sleep 1.5
-            ws-migrate headless 2>/dev/null || true
+            # Brief settle after svds_ensure_headless: the headless output exists
+            # and is configured, but give sway one IPC cycle to finalize mode/scale
+            # before ws-migrate reads output geometry. ws-migrate is idempotent so
+            # running before kanshi fully applies is harmless.
             sleep 0.5
+            ws-migrate headless 2>/dev/null || true
         done
         ;;
 esac

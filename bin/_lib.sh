@@ -122,25 +122,28 @@ svds_ensure_headless() {
         return 0
     fi
 
-    # Wait up to 2s in case it's briefly re-initializing (kanshi applying a
-    # profile). Don't call create_output during this window — we'd get a
-    # duplicate HEADLESS-N.
-    local i
-    for i in $(seq 1 10); do
+    # Wait for a headless output to appear via sway output events (e.g. kanshi
+    # creating one during profile apply). subscribe without -m exits after the
+    # first event; timeout handles the case where no event fires. Event payload
+    # is just {"change":"unspecified"} so we check ground truth via get_headless.
+    local _attempt
+    for _attempt in 1 2 3 4 5; do
+        timeout 0.5 swaymsg -t subscribe '["output"]' > /dev/null 2>&1 || true
         svds_get_headless
         [ -n "$HEADLESS_OUTPUT" ] && { swaymsg output "$HEADLESS_OUTPUT" enable 2>/dev/null || true; return 0; }
-        sleep 0.2
     done
 
     # Truly absent — create it
     swaymsg create_output 2>/dev/null
 
-    # Wait up to 2s for it to appear and discover the name
-    for i in $(seq 1 10); do
+    # Wait for sway to process create_output — it fires exactly one output event.
+    # Check immediately first (handles race where event fires before subscribe),
+    # then subscribe if needed. timeout covers edge cases.
+    svds_get_headless
+    if [ -z "$HEADLESS_OUTPUT" ]; then
+        timeout 2 swaymsg -t subscribe '["output"]' > /dev/null 2>&1 || true
         svds_get_headless
-        [ -n "$HEADLESS_OUTPUT" ] && break
-        sleep 0.2
-    done
+    fi
 
     if [ -z "$HEADLESS_OUTPUT" ]; then
         echo "svds_ensure_headless: failed to create headless output" >&2

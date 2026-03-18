@@ -20,7 +20,10 @@ command -v python3 >/dev/null 2>&1 || { echo "Error: python3 is required" >&2; e
 # Launch if not running
 if ! swaymsg -t get_tree | grep -qF '"app_id": "dropdown"'; then
     "$TERMINAL" --class dropdown "$DROPDOWN_SHELL" &
-    # Poll until the window appears (up to 2s) instead of fixed sleep
+    # Poll until the window appears (up to 2s). Ground-truth check via get_tree
+    # is more reliable than sway window subscribe (noisy events from all windows,
+    # race condition if window appears before subscribe starts). 0.1s granularity
+    # adds <100ms overhead — invisible for a UI action.
     for _i in $(seq 1 20); do
         swaymsg -t get_tree | grep -qF '"app_id": "dropdown"' && break
         sleep 0.1

@@ -41,8 +41,20 @@ export HEADLESS_RES HEADLESS_SCALE
 export PHYSICAL_POS_K="${PHYSICAL_POS// /,}"
 export HEADLESS_POS_K="${HEADLESS_POS// /,}"
 
-# Give Sway time to initialize outputs
-sleep 1.5
+# Wait for sway to finish initializing outputs after reload. Poll get_outputs
+# until at least one output has a valid current_mode (proves mode-set is done,
+# not just IPC responding). Max 3s — kanshi needs modes to match profiles.
+for _ready in $(seq 1 15); do
+    _has_mode=$(swaymsg -t get_outputs 2>/dev/null | python3 -c "
+import json, sys
+try:
+    outputs = json.load(sys.stdin)
+    print('1' if any(o.get('current_mode') for o in outputs) else '0')
+except: print('0')
+" 2>/dev/null)
+    [[ "$_has_mode" = "1" ]] && break
+    sleep 0.2
+done
 
 # Generate kanshi config from template
 if [ ! -f "$TEMPLATE" ]; then

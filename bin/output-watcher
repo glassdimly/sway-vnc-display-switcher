@@ -64,8 +64,16 @@ _usb_watcher() {
         svds_log "USB: hub event detected: action=$action"
 
         if [ "$action" = "add" ]; then
-            svds_log "USB: KVM hub added — migrating to hdmi (after 1.5s settle)"
-            sleep 1.5
+            svds_log "USB: KVM hub added — migrating to hdmi (settling...)"
+            # Hardware settle: USB hub re-enumeration + HDMI link training + EDID
+            # + mode-set. Minimum 0.5s for physics (HDMI spec), then poll sway for
+            # PHYSICAL_OUTPUT to become active. Max 3s — debounce layer catches misses.
+            sleep 0.5
+            for _settle in $(seq 1 10); do
+                _state=$(_read_sway_state)
+                [[ "$_state" = "1" ]] && break
+                sleep 0.25
+            done
             svds_log "USB: calling ws-migrate hdmi"
             ws-migrate hdmi 2>/dev/null || true
         else
@@ -113,7 +121,11 @@ _sway_watcher() {
         #
         # Fix: wait 2s (> ws-migrate's full runtime of ~1.5s) then re-read. If the
         # state change was transient it will have resolved; a real disconnect won't.
-        sleep 2
+        # Debounce: ws-migrate fires swaymsg output commands that cause transient
+        # active=False on PHYSICAL_OUTPUT (~50-200ms). Wait longer than ws-migrate's
+        # full runtime (~1s with IPC sync barriers) to filter transient state changes.
+        # Re-read after debounce to confirm real change.
+        sleep 1.5
         active=$(_read_sway_state)
         [ "$active" = "$last_active" ] && continue  # was transient — ignore
 
@@ -123,8 +135,15 @@ _sway_watcher() {
         svds_log "SWAY: output state changed: active=$active"
 
         if [ "$active" = "1" ]; then
-            svds_log "SWAY: PHYSICAL_OUTPUT connected — migrating to hdmi (after 1.5s settle)"
-            sleep 1.5
+            svds_log "SWAY: PHYSICAL_OUTPUT connected — migrating to hdmi (settling...)"
+            # Hardware settle: HDMI reconnect needs EDID negotiation + mode-set.
+            # Minimum 0.5s, then poll for output to stabilize.
+            sleep 0.5
+            for _settle in $(seq 1 10); do
+                _state=$(_read_sway_state)
+                [[ "$_state" = "1" ]] && break
+                sleep 0.25
+            done
             svds_log "SWAY: calling ws-migrate hdmi"
             ws-migrate hdmi 2>/dev/null || true
         else
@@ -147,7 +166,17 @@ _sway_watcher() {
 # switched away). Check the current USB hub presence and migrate immediately.
 _startup_check() {
     [ -z "$KVM_USB_HUB" ] && return
-    sleep 1  # let sway settle after reload before touching workspaces
+    # Wait for sway IPC to be ready and outputs to be resolved after reload.
+    # Poll get_outputs until it returns valid JSON with at least one output.
+    for _ready in $(seq 1 10); do
+        _n_out=$(swaymsg -t get_outputs 2>/dev/null | python3 -c "
+import json, sys
+try: print(len(json.load(sys.stdin)))
+except: print(0)
+" 2>/dev/null)
+        [[ "${_n_out:-0}" -gt 0 ]] && break
+        sleep 0.2
+    done
     if [ -e "/sys/bus/usb/devices/${KVM_USB_HUB}" ]; then
         svds_log "STARTUP: KVM hub present — migrating to hdmi"
         ws-migrate hdmi 2>/dev/null || true
@@ -175,12 +204,16 @@ _startup_check &
 
 # USB watcher: background, loops forever
 if [ -n "$KVM_USB_HUB" ]; then
-    while true; do _usb_watcher; sleep 1; svds_log "USB: watcher restarted"; done &
+    while true; do
+        _usb_watcher
+        sleep 1  # restart backoff: prevent spin-loop if udevadm exits immediately
+        svds_log "USB: watcher restarted"
+    done &
 fi
 
 # Sway output watcher: foreground, restarts on sway reload
 while true; do
     _sway_watcher
-    sleep 1
+    sleep 1  # restart backoff: prevent spin-loop if swaymsg subscribe exits immediately
     svds_log "SWAY: watcher restarted"
 done

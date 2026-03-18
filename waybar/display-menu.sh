@@ -97,7 +97,12 @@ elif echo "$CHOICE" | grep -q "VNC  kill"; then
 elif echo "$CHOICE" | grep -q "VNC  start"; then
     mkdir -p "$(dirname "$VNC_LOG")"
     nohup vnc-serve start > "$VNC_LOG" 2>&1 &
-    sleep 3  # allow headless creation + wayvnc startup
+    # Poll for wayvnc to start (typically ~1-2s) instead of flat 3s sleep.
+    # vnc-serve creates the headless output, launches wayvnc, then serves.
+    for _vnc_wait in $(seq 1 30); do  # 30 x 0.2s = 6s max
+        pgrep -x wayvnc > /dev/null && break
+        sleep 0.2
+    done
     pkill -RTMIN+"$WAYBAR_SIGNAL" waybar 2>/dev/null || true
 else
     # Unknown/extra output — extract name and migrate manually

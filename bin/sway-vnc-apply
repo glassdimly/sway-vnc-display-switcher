@@ -65,9 +65,9 @@ for_window [app_id="dropdown"] {
 }
 
 # ── Kanshi + VNC autostart ────────────────────────────────────────────────────
-exec_always bash -c 'f="\${XDG_RUNTIME_DIR:-/tmp}/kanshi-start.pid"; [ -f "\$f" ] && { kill "\$(cat "\$f")" 2>/dev/null; sleep 0.3; }; rm -f "\$f"; kanshi-start'
-exec_always bash -c 'f="\${XDG_RUNTIME_DIR:-/tmp}/output-watcher.pgid"; if [ -f "\$f" ]; then kill -9 -- -"\$(cat "\$f")" 2>/dev/null; rm -f "\$f"; fi; sleep 0.3; output-watcher'
-exec_always bash -c 'sleep 2; pgrep -x wayvnc || vnc-serve'
+exec_always bash -c 'f="\${XDG_RUNTIME_DIR:-/tmp}/kanshi-start.pid"; if [ -f "\$f" ]; then p=\$(cat "\$f"); kill "\$p" 2>/dev/null; for _ in \$(seq 1 30); do kill -0 "\$p" 2>/dev/null || break; sleep 0.01; done; fi; rm -f "\$f"; kanshi-start'
+exec_always bash -c 'f="\${XDG_RUNTIME_DIR:-/tmp}/output-watcher.pgid"; if [ -f "\$f" ]; then p=\$(cat "\$f"); kill -9 -- -"\$p" 2>/dev/null; for _ in \$(seq 1 30); do kill -0 "\$p" 2>/dev/null || break; sleep 0.01; done; rm -f "\$f"; fi; output-watcher'
+exec_always bash -c 'sleep 1.5; pgrep -x wayvnc || vnc-serve'
 EOF
 
 echo "Written: $OUT"

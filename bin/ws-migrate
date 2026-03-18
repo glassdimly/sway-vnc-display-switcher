@@ -57,7 +57,9 @@ case "$TARGET" in
         # Release virtual pointer confinement so the physical mouse (KVM back) has
         # full layout access again.
         swaymsg "input '0:0:wlr_virtual_pointer_v1' map_to_output *" 2>/dev/null || true
-        sleep 0.3
+        # IPC sync barrier: sway IPC is serialized, so get_outputs forces all
+        # preceding output config commands to complete before we proceed.
+        swaymsg -t get_outputs > /dev/null 2>&1
         ;;
     headless)
         OUTPUT="$HEADLESS_OUTPUT"
@@ -99,7 +101,9 @@ case "$TARGET" in
         # cursor exits the headless output partway across.
         # (wlroots: wlr_cursor_absolute_to_layout_coords uses output box when mapped)
         swaymsg "input '0:0:wlr_virtual_pointer_v1' map_to_output $HEADLESS_OUTPUT" 2>/dev/null || true
-        sleep 0.3
+        # IPC sync barrier: sway IPC is serialized, so get_outputs forces all
+        # preceding output config commands to complete before we proceed.
+        swaymsg -t get_outputs > /dev/null 2>&1
         ;;
     *)
         echo "Usage: ws-migrate hdmi|headless" >&2
@@ -158,7 +162,9 @@ _OTHER="$( [ "$TARGET" = headless ] && echo "$PHYSICAL_OUTPUT" || echo "$HEADLES
 swaymsg "workspace number 99; move workspace to output $_OTHER" 2>/dev/null || true
 
 for _i in 1 2; do
-    sleep 0.3
+    # IPC sync barrier: sway IPC is serialized, so get_workspaces forces the
+    # preceding workspace re-anchor command to complete before we check for stragglers.
+    swaymsg -t get_workspaces > /dev/null 2>&1
     # Scan ALL workspaces on the parking output except ws 99 (catches numbers > WS_MAX too).
     _stragglers=$(swaymsg -t get_workspaces 2>/dev/null \
         | _OTHER="$_OTHER" python3 -c "
