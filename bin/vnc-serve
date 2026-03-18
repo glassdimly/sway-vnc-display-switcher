@@ -52,42 +52,52 @@ case "${1:-start}" in
         require_wayland
         echo "Killing VNC and destroying headless output..."
 
-        # 1. Stop wayvnc and its exec_always wrapper.
-        #    sway-vnc.conf launches: bash -c 'sleep 2; pgrep -x wayvnc || vnc-serve'
-        #    If we only kill wayvnc, the wrapper respawns it. Kill the wrapper first
-        #    so it can't race us, then kill wayvnc itself.
-        pkill -u "$(id -u)" -f 'pgrep -x wayvnc.*vnc-serve' 2>/dev/null || true
-        pkill -u "$(id -u)" -x wayvnc 2>/dev/null || true
+        # Ordering is critical: this command may be invoked as a waybar click
+        # handler child (display-menu.sh). The waybar refresh signal at step 7
+        # can terminate the handler, so ALL cleanup must complete before it.
+        # We deliberately avoid ws-migrate — sway auto-migrates all workspaces
+        # to the remaining output when the headless output is unplugged.
 
-        # 2. Migrate workspaces to physical output
-        ws-migrate hdmi 2>/dev/null || true
-
-        # 3. Stop output-watcher (kill via pgid file — prevents it from
-        #    auto-migrating back or fighting the teardown)
+        # 1. Kill output-watcher first — prevents it from fighting the teardown
+        #    (e.g. seeing the unplug event and trying to re-migrate).
         _ow_pgid_file="${XDG_RUNTIME_DIR:-/tmp}/output-watcher.pgid"
         if [ -f "$_ow_pgid_file" ]; then
             kill -9 -- -"$(cat "$_ow_pgid_file")" 2>/dev/null || true
             rm -f "$_ow_pgid_file"
         fi
 
-        # 4. Stop kanshi (it would recreate headless via exec_always on reload)
+        # 2. Kill kanshi — prevents it from recreating the headless output
+        #    via its profile exec commands on the next sway reload.
         _ks_pid_file="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/kanshi-start.pid"
         if [ -f "$_ks_pid_file" ]; then
             kill "$(cat "$_ks_pid_file")" 2>/dev/null || true
             rm -f "$_ks_pid_file"
         fi
 
-        # 5. Discover and unplug headless output
+        # 3. Kill wayvnc and its exec_always respawn wrapper.
+        #    sway-vnc.conf launches: bash -c 'sleep 2; pgrep -x wayvnc || vnc-serve'
+        #    Kill the wrapper first so it can't race us, then kill wayvnc.
+        pkill -u "$(id -u)" -f 'pgrep -x wayvnc.*vnc-serve' 2>/dev/null || true
+        pkill -u "$(id -u)" -x wayvnc 2>/dev/null || true
+
+        # 4. Release cursor confinement so the physical mouse has full access.
+        swaymsg "input '0:0:wlr_virtual_pointer_v1' map_to_output *" 2>/dev/null || true
+
+        # 5. Discover and unplug headless output. Sway automatically migrates
+        #    all workspaces from the unplugged output to the remaining one
+        #    (HDMI-A-1), so no explicit ws-migrate is needed.
         svds_get_headless
         if [ -n "$HEADLESS_OUTPUT" ]; then
             swaymsg output "$HEADLESS_OUTPUT" unplug 2>/dev/null || true
             echo "Unplugged $HEADLESS_OUTPUT"
         fi
 
-        # 6. Remove state file
+        # 6. Remove state file.
         rm -f "$_SVDS_HEADLESS_STATE"
 
-        # 7. Refresh waybar
+        # 7. Refresh waybar — MUST be last. When invoked from a waybar click
+        #    handler, this signal may terminate our parent process. All critical
+        #    cleanup is already done above.
         pkill -RTMIN+"$WAYBAR_SIGNAL" waybar 2>/dev/null || true
 
         echo "Done. Headless output destroyed. Run 'vnc-serve start' to recreate."

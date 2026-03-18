@@ -364,6 +364,57 @@ sudo systemctl enable --now sshd
 # udevadm is part of systemd — already present on most systems
 ```
 
+### Multi-GPU systems (WLR_DRM_DEVICES)
+
+If your machine has both an integrated GPU (iGPU) and a discrete GPU (dGPU), wlroots may default to the wrong one. This causes Sway to start but never see your physical monitor — only `HEADLESS-1` appears in `swaymsg -t get_outputs`, the physical screen stays black, and kanshi matches only the headless profile.
+
+**Symptoms:**
+- Sway starts, VNC works, but the physical monitor is black
+- `swaymsg -t get_outputs` shows only `HEADLESS-1` — no `HDMI-A-1` (or your monitor's name)
+- kanshi logs "no profile matched" for the docked profile
+- The monitor works fine in the TTY/console (kernel framebuffer uses a different driver path)
+
+**Diagnosis:**
+
+```bash
+# List GPUs and their connected outputs:
+for card in /sys/class/drm/card[0-9]*; do
+    name=$(basename "$card")
+    vendor=$(cat "$card/device/vendor" 2>/dev/null)
+    device=$(cat "$card/device/device" 2>/dev/null)
+    echo "$name: vendor=$vendor device=$device"
+    for conn in "$card"/card*-*; do
+        [ -e "$conn/status" ] && echo "  $(basename "$conn"): $(cat "$conn/status")"
+    done
+done
+```
+
+Look for which `card*` has your monitor's connector (e.g. `HDMI-A-1: connected`). If it's not `card0`, wlroots needs to be told which GPU to use.
+
+**Fix:**
+
+```bash
+# Create a systemd user environment file:
+mkdir -p ~/.config/environment.d
+cat > ~/.config/environment.d/gpu.conf << 'EOF'
+# Force wlroots (Sway/wayvnc) to use the discrete GPU
+# which has the physical monitor connected.
+WLR_DRM_DEVICES=/dev/dri/card1
+EOF
+```
+
+Then log out and back in (or restart Sway). The systemd user session reads `environment.d/` at login and exports the variable to all processes, including Sway.
+
+**Verifying:**
+
+```bash
+# From inside Sway:
+swaymsg -t get_outputs | jq '.[].name'
+# Should now list both HDMI-A-1 and HEADLESS-1
+```
+
+> **Note:** `card0`/`card1` numbering can change if hardware is added or removed. If the physical monitor disappears after a hardware change, re-run the diagnosis above to check which card has the connected output and update `gpu.conf` accordingly.
+
 ### Manual install (skip installer)
 
 1. Copy `conf.example` to `~/.config/sway-vnc-display-switcher/conf` and edit it.
@@ -594,6 +645,7 @@ Note: `map ctrl+c` / `map ctrl+v` still work in a local Sway session — the Alt
 
 | Symptom | Fix |
 |---|---|
+| Physical monitor black, only HEADLESS-1 in `get_outputs` | Multi-GPU system — Sway is using the wrong GPU. See "Multi-GPU systems" under Quick install |
 | `WAYLAND_DISPLAY not set` | Run `vnc-serve` from inside your Sway session (not via SSH without a Wayland socket) |
 | VNC connection refused | `pgrep -a wayvnc` — not running; run `vnc-serve` from the Sway session |
 | Workspaces on wrong output after KVM switch | Check `output-watcher` is running (`pgrep -a output-watcher`); verify `KVM_USB_HUB` in conf matches your KVM's USB hub path |
