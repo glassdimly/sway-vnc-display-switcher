@@ -39,6 +39,7 @@ echo "$$" > "$_PIDFILE"
 # shellcheck source=_lib.sh
 . "$(dirname "$(readlink -f "$0")")/_lib.sh"
 svds_load_conf
+svds_rotate_logs
 
 # ── USB watcher (EDID-preserving KVMs) ───────────────────────────────────────
 # Watches udev USB kernel events for add/remove of the KVM hub.

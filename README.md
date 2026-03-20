@@ -312,7 +312,12 @@ wayvncctl output-set HEADLESS-1   # force capture to headless output
 # output-watcher event log — records every USB event, Sway output event, and migration call
 cat ~/.local/state/sway-vnc/output-watcher.log
 tail -f ~/.local/state/sway-vnc/output-watcher.log   # live follow
+
+# ws-migrate debug log — records every migration with before/after workspace state
+cat ~/.local/state/sway-vnc/ws-migrate-debug.log
 ```
+
+**Log rotation:** Logs are automatically rotated every 5 days by `svds_rotate_logs` (called on every `output-watcher` startup, which happens on each sway reload). The active `.log` is renamed to `.log.1` and the previous `.log.1` is deleted — at most 2 files per log at any time. No cron or systemd timer needed.
 
 ### Common diagnostic sequences
 

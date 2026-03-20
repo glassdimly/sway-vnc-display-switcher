@@ -161,3 +161,27 @@ svds_ensure_headless() {
 svds_log() {
     [ -n "${_LOG_FILE:-}" ] && echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$_LOG_FILE"
 }
+
+# ── svds_rotate_logs ──────────────────────────────────────────────────────────
+# Rotate *.log files in the sway-vnc state directory.
+# - If a rotated .log.1 exists, delete it (it's from the previous cycle).
+# - If the active .log is older than 5 days (mtime), rename it to .log.1.
+# Call from a long-lived process startup (e.g. output-watcher) so it runs
+# on every sway reload without needing cron or a systemd timer.
+svds_rotate_logs() {
+    local _log_dir="${XDG_STATE_HOME:-$HOME/.local/state}/sway-vnc"
+    [ -d "$_log_dir" ] || return 0
+
+    local _f
+    for _f in "$_log_dir"/*.log; do
+        [ -f "$_f" ] || continue
+
+        # Delete previous rotation if it exists
+        [ -f "${_f}.1" ] && rm -f "${_f}.1"
+
+        # Rotate current log if older than 5 days
+        if find "$_f" -mtime +5 -print -quit 2>/dev/null | grep -q .; then
+            mv "$_f" "${_f}.1"
+        fi
+    done
+}

@@ -20,6 +20,14 @@ set -u
 svds_load_conf
 svds_get_headless  # discover runtime HEADLESS-N name
 
+# ── Debug logging (temporary) ────────────────────────────────────────────────
+_MIGRATE_LOG="${XDG_STATE_HOME:-$HOME/.local/state}/sway-vnc/ws-migrate-debug.log"
+_mlog() { echo "[$(date '+%H:%M:%S.%3N')] $*" >> "$_MIGRATE_LOG"; }
+_mlog "--- ws-migrate ${1:-} START (PID=$$, HEADLESS=$HEADLESS_OUTPUT, PPID=$PPID)"
+_mlog "  state_file=$(cat "$_SVDS_HEADLESS_STATE" 2>/dev/null || echo MISSING)"
+_mlog "  outputs=$(swaymsg -t get_outputs 2>/dev/null | python3 -c "import json,sys; print(' '.join(o['name'] for o in json.load(sys.stdin)))" 2>/dev/null)"
+_mlog "  workspaces_before=$(swaymsg -t get_workspaces 2>/dev/null | python3 -c "import json,sys; print(' '.join(f\"{w['name']}@{w['output']}\" for w in json.load(sys.stdin)))" 2>/dev/null)"
+
 # Serialize concurrent calls — if another ws-migrate is already running, exit
 # immediately rather than racing on swaymsg output/workspace commands.
 # Race condition: output-watcher's sway event watcher can see a transient
@@ -28,6 +36,7 @@ svds_get_headless  # discover runtime HEADLESS-N name
 _LOCK="${XDG_RUNTIME_DIR:-/run/user/${UID}}/ws-migrate.lock"
 exec {_lock_fd}>"$_LOCK"          # open lockfile; bash assigns a free fd into $lock_fd
 flock -n "$_lock_fd" || {          # -n: non-blocking — don't queue, just skip
+    _mlog "  SKIPPED — lock held"
     echo "ws-migrate: already running, skipping ${1:-}" >&2
     exit 0
 }
@@ -193,6 +202,9 @@ unset _FOCUSED_NUM
 
 # Focus the target output as a final fallback.
 swaymsg "focus output $OUTPUT"
+
+_mlog "  workspaces_after=$(swaymsg -t get_workspaces 2>/dev/null | python3 -c "import json,sys; print(' '.join(f\"{w['name']}@{w['output']}\" for w in json.load(sys.stdin)))" 2>/dev/null)"
+_mlog "--- ws-migrate ${TARGET} DONE"
 
 # Always keep wayvnc capturing the headless output regardless of migration direction.
 # Switching capture to HDMI-A-1 sends a display-resize event to the VNC client
