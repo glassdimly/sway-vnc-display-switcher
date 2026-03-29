@@ -16,6 +16,10 @@ set -u
 . "$(dirname "$(readlink -f "$0")")/_lib.sh"
 svds_load_conf
 
+# Resolve the absolute path to the bin directory so generated sway config
+# uses full paths. Sway's exec environment does not include ~/bin in PATH.
+_BIN="$(dirname "$(readlink -f "$0")")"
+
 OUT="${XDG_CONFIG_HOME:-$HOME/.config}/sway/sway-vnc.conf"
 CONF_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/sway-vnc-display-switcher/conf"
 
@@ -42,13 +46,13 @@ cat > "$OUT" << EOF
 ${WS_LINES}
 # ── Output migration keybindings ─────────────────────────────────────────────
 # Manually move all workspaces to a target output (useful when kanshi misses a KVM switch).
-bindsym ${KEY_MIGRATE_PHYSICAL} exec ws-migrate hdmi
-bindsym ${KEY_MIGRATE_HEADLESS} exec ws-migrate headless
+bindsym ${KEY_MIGRATE_PHYSICAL} exec ${_BIN}/ws-migrate hdmi
+bindsym ${KEY_MIGRATE_HEADLESS} exec ${_BIN}/ws-migrate headless
 
 # ── Dropdown terminal ─────────────────────────────────────────────────────────
 # Toggle quake-style scratchpad terminal
-bindsym ${KEY_DROPDOWN} exec dropdown.sh
-$([ -n "${KEY_DROPDOWN_2}" ] && echo "bindsym ${KEY_DROPDOWN_2} exec dropdown.sh")
+bindsym ${KEY_DROPDOWN} exec ${_BIN}/dropdown.sh
+$([ -n "${KEY_DROPDOWN_2}" ] && echo "bindsym ${KEY_DROPDOWN_2} exec ${_BIN}/dropdown.sh")
 
 # Launch dropdown terminal on startup (only if not already running)
 exec_always swaymsg -t get_tree | grep -q '"app_id": "dropdown"' || ${TERMINAL} --class dropdown ${DROPDOWN_SHELL}
@@ -65,9 +69,9 @@ for_window [app_id="dropdown"] {
 }
 
 # ── Kanshi + VNC autostart ────────────────────────────────────────────────────
-exec_always bash -c 'f="\${XDG_RUNTIME_DIR:-/tmp}/kanshi-start.pid"; if [ -f "\$f" ]; then p=\$(cat "\$f"); kill "\$p" 2>/dev/null; for _ in \$(seq 1 30); do kill -0 "\$p" 2>/dev/null || break; sleep 0.01; done; fi; rm -f "\$f"; kanshi-start'
-exec_always bash -c 'f="\${XDG_RUNTIME_DIR:-/tmp}/output-watcher.pgid"; if [ -f "\$f" ]; then p=\$(cat "\$f"); kill -9 -- -"\$p" 2>/dev/null; for _ in \$(seq 1 30); do kill -0 "\$p" 2>/dev/null || break; sleep 0.01; done; rm -f "\$f"; fi; output-watcher'
-exec_always bash -c 'sleep 1.5; pgrep -x wayvnc || vnc-serve'
+exec_always bash -c 'f="\${XDG_RUNTIME_DIR:-/tmp}/kanshi-start.pid"; if [ -f "\$f" ]; then p=\$(cat "\$f"); kill "\$p" 2>/dev/null; for _ in \$(seq 1 30); do kill -0 "\$p" 2>/dev/null || break; sleep 0.01; done; fi; rm -f "\$f"; ${_BIN}/kanshi-start'
+exec_always bash -c 'f="\${XDG_RUNTIME_DIR:-/tmp}/output-watcher.pgid"; if [ -f "\$f" ]; then p=\$(cat "\$f"); kill -9 -- -"\$p" 2>/dev/null; for _ in \$(seq 1 30); do kill -0 "\$p" 2>/dev/null || break; sleep 0.01; done; rm -f "\$f"; fi; ${_BIN}/output-watcher'
+exec_always bash -c 'sleep 1.5; pgrep -x wayvnc || ${_BIN}/vnc-serve'
 EOF
 
 echo "Written: $OUT"
