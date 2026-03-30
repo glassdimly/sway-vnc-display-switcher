@@ -8,6 +8,11 @@
 # If _lib.sh was sourced, load conf through it; otherwise defaults are already set above
 type svds_load_conf &>/dev/null && svds_load_conf
 
+# Resolve bin directory for full-path script calls (sway exec doesn't have ~/bin in PATH).
+# Try relative to script first (works from module repo), fall back to well-known config path.
+_BIN="$(dirname "$(readlink -f "$0")")/../bin"
+[ -x "$_BIN/ws-migrate" ] || _BIN="${XDG_CONFIG_HOME:-$HOME/.config}/sway-vnc-display-switcher/bin"
+
 # Ensure defaults for variables used in this script
 PHYSICAL_OUTPUT="${PHYSICAL_OUTPUT:-HDMI-A-1}"
 HEADLESS_OUTPUT="${HEADLESS_OUTPUT:-HEADLESS-1}"
@@ -89,14 +94,14 @@ CHOICE=$(echo "$MENU" | rofi -dmenu -i -p "Display" -theme-str 'window { width: 
 [ -z "$CHOICE" ] && exit 0
 
 if echo "$CHOICE" | grep -qF "$PHYSICAL_OUTPUT"; then
-    ws-migrate hdmi
+    "$_BIN/ws-migrate" hdmi
 elif echo "$CHOICE" | grep -q "HEADLESS-"; then
-    ws-migrate headless
+    "$_BIN/ws-migrate" headless
 elif echo "$CHOICE" | grep -q "VNC  kill"; then
-    vnc-serve kill
+    "$_BIN/vnc-serve" kill
 elif echo "$CHOICE" | grep -q "VNC  start"; then
     mkdir -p "$(dirname "$VNC_LOG")"
-    nohup vnc-serve start > "$VNC_LOG" 2>&1 &
+    nohup "$_BIN/vnc-serve" start > "$VNC_LOG" 2>&1 &
     # Poll for wayvnc to start (typically ~1-2s) instead of flat 3s sleep.
     # vnc-serve creates the headless output, launches wayvnc, then serves.
     for _vnc_wait in $(seq 1 30); do  # 30 x 0.2s = 6s max
