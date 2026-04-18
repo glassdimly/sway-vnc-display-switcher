@@ -82,15 +82,18 @@ HEADLESS_RES="3456x2160"
 
 # ── KVM detection ─────────────────────────────────────────────────────────────
 
-# USB hub path suffix for EDID-preserving KVM detection.
-# Many KVMs preserve EDID and HPD so Sway never fires output events on switch.
-# Instead, output-watcher watches udev USB kernel events for the KVM hub.
+# USB vendor:product ID for the KVM hub. output-watcher resolves this to a
+# sysfs bus-port path dynamically at runtime, so the config survives USB
+# re-enumeration that changes bus-port assignments.
 #
-# To find your KVM's USB hub path:
+# To find your KVM's USB hub:
 #   udevadm monitor --kernel --subsystem-match=usb
-#   (then switch the KVM — look for add/remove lines and note the path)
+#   (then switch the KVM — look for add/remove lines and note the device path)
+#   Then: cat /sys/bus/usb/devices/<path>/idVendor /sys/bus/usb/devices/<path>/idProduct
 #
-# Set to the path component(s) that uniquely identify the KVM hub.
-# Example: "1-6/1-6.4"  matches  /devices/.../1-6/1-6.4 (usb)
 # Leave blank to disable USB detection (Sway output events only).
-KVM_USB_HUB=""
+KVM_USB_VID_PID=""
+
+# Manual override: set this to force a specific sysfs path instead of
+# auto-resolving from VID_PID. Rarely needed.
+# KVM_USB_HUB=""

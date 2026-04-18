@@ -14,7 +14,8 @@ DROPDOWN_WIDTH="100ppt"
 DROPDOWN_HEIGHT="80ppt"
 KEY_MIGRATE_PHYSICAL="Mod4+ctrl+d"
 KEY_MIGRATE_HEADLESS="Mod4+ctrl+n"
-KEY_DROPDOWN="Control+Shift+Space"
+KEY_DROPDOWN="Mod4+Shift+g"
+KEY_DROPDOWN_2="Control+Shift+Space"
 MONITOR_DESC="Dell Inc. DELL U2717D 67YGV87EBWAL"
 MONITOR_RES="2560x1440"
 HEADLESS_RES="3456x2064"
@@ -25,7 +26,9 @@ HEADLESS_SCALE="2"
 PHYSICAL_POS="0 0"
 HEADLESS_POS="2560 0"
 
-# USB hub path suffix for EDID-preserving KVM detection.
-# GenesysLogic USB2.1 Hub (usb3/3-2) — appears on KVM switch TO this machine.
-# Confirmed via: udevadm monitor --kernel --subsystem-match=usb
-KVM_USB_HUB="3-2"
+# KVM USB hub detection — identifies the KVM switch via USB hub appearance.
+# GenesysLogic USB2.1 Hub — appears on KVM switch TO this machine.
+# VID_PID is used to dynamically resolve the sysfs path at runtime.
+# KVM_USB_HUB is auto-resolved; set it manually only to override.
+KVM_USB_VID_PID="05e3:0610"
+# KVM_USB_HUB=""  # auto-resolved from VID_PID

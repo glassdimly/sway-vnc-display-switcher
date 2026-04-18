@@ -5,7 +5,8 @@
 #
 #  1. USB (primary, for EDID-preserving KVMs):
 #     Watches udev USB kernel events for the KVM hub device.
-#     KVM_USB_HUB in conf is the path suffix of the hub (e.g. "1-6/1-6.4").
+#     KVM_USB_VID_PID in conf is the vendor:product ID (e.g. "05e3:0610").
+#     The sysfs path is resolved dynamically at runtime.
 #       remove → ws-migrate headless
 #       add    → ws-migrate hdmi  (after 1.5s settle delay)
 #
@@ -40,12 +41,16 @@ echo "$$" > "$_PIDFILE"
 . "$(dirname "$(readlink -f "$0")")/_lib.sh"
 svds_load_conf
 svds_rotate_logs
+svds_resolve_usb_hub || true
 
 # ── USB watcher (EDID-preserving KVMs) ───────────────────────────────────────
 # Watches udev USB kernel events for add/remove of the KVM hub.
 # Runs forever (udevadm doesn't exit on sway reload).
 _usb_watcher() {
-    [ -z "$KVM_USB_HUB" ] && return
+    # Re-resolve hub path each time the watcher (re)starts — handles USB
+    # re-enumeration that changes bus-port assignments between restarts.
+    svds_resolve_usb_hub || true
+    [ -z "$KVM_USB_HUB" ] && { svds_log "USB: no hub found for VID_PID=${KVM_USB_VID_PID:-<none>} — skipping"; return; }
 
     local last_action=""
 
@@ -166,7 +171,9 @@ _sway_watcher() {
 # happened before this process started (e.g. sway reload while KVM was already
 # switched away). Check the current USB hub presence and migrate immediately.
 _startup_check() {
-    [ -z "$KVM_USB_HUB" ] && return
+    # Re-resolve hub path — may have changed since last boot/reload
+    svds_resolve_usb_hub || true
+    [ -z "$KVM_USB_HUB" ] && { svds_log "STARTUP: no hub found for VID_PID=${KVM_USB_VID_PID:-<none>} — skipping KVM check"; return; }
     # Wait for sway IPC to be ready and outputs to be resolved after reload.
     # Poll get_outputs until it returns valid JSON with at least one output.
     for _ready in $(seq 1 10); do
@@ -198,13 +205,13 @@ except: print(0)
 # udevadm/swaymsg pipes, and any nested children. No orphans on sway reload.
 trap 'rm -f "$_PIDFILE"; kill -9 -- -$$ 2>/dev/null; exit' EXIT INT TERM
 
-svds_log "output-watcher started (PID=$$, PHYSICAL=$PHYSICAL_OUTPUT, HEADLESS=$HEADLESS_OUTPUT, KVM_HUB=${KVM_USB_HUB:-<none>})"
+svds_log "output-watcher started (PID=$$, PHYSICAL=$PHYSICAL_OUTPUT, HEADLESS=$HEADLESS_OUTPUT, KVM_VID_PID=${KVM_USB_VID_PID:-<none>}, KVM_HUB=${KVM_USB_HUB:-<none>})"
 
 # Startup state check: background so watchers start immediately in parallel
 _startup_check &
 
-# USB watcher: background, loops forever
-if [ -n "$KVM_USB_HUB" ]; then
+# USB watcher: background, loops forever (needs either a resolved hub or vid_pid to resolve later)
+if [ -n "$KVM_USB_HUB" ] || [ -n "${KVM_USB_VID_PID:-}" ]; then
     while true; do
         _usb_watcher
         sleep 1  # restart backoff: prevent spin-loop if udevadm exits immediately

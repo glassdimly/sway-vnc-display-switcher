@@ -53,6 +53,7 @@ svds_load_conf() {
     HEADLESS_SCALE="${HEADLESS_SCALE:-1}"
     PHYSICAL_POS="${PHYSICAL_POS:-0 0}"
     HEADLESS_POS="${HEADLESS_POS:-2560 0}"
+    KVM_USB_VID_PID="${KVM_USB_VID_PID:-}"
     KVM_USB_HUB="${KVM_USB_HUB:-}"
     WS_MAX="${WS_MAX:-10}"
 
@@ -184,4 +185,45 @@ svds_rotate_logs() {
             mv "$_f" "${_f}.1"
         fi
     done
+}
+
+# ── svds_resolve_usb_hub ──────────────────────────────────────────────────────
+# Resolve KVM_USB_VID_PID (vendor:product) to a sysfs bus-port path and set
+# KVM_USB_HUB. If KVM_USB_HUB is already set (manual override), skip.
+# Returns 0 if resolved or already set, 1 if no device found.
+#
+# Example: VID_PID="05e3:0610" → KVM_USB_HUB="5-1"
+#
+# The sysfs path is the directory basename under /sys/bus/usb/devices/ whose
+# idVendor and idProduct match. Only top-level hub entries (bus-port format,
+# no colons or interface suffixes) are considered.
+svds_resolve_usb_hub() {
+    # Manual override takes precedence
+    if [ -n "${KVM_USB_HUB:-}" ]; then
+        return 0
+    fi
+
+    if [ -z "${KVM_USB_VID_PID:-}" ]; then
+        return 1
+    fi
+
+    local vid pid dev devname
+    vid="${KVM_USB_VID_PID%%:*}"
+    pid="${KVM_USB_VID_PID##*:}"
+
+    for dev in /sys/bus/usb/devices/*; do
+        devname="${dev##*/}"
+        # Skip interfaces (e.g. "5-1:1.0") and root hubs (e.g. "usb1")
+        [[ "$devname" =~ ^[0-9]+-[0-9.]+$ ]] || continue
+        [ -f "$dev/idVendor" ] || continue
+        if [ "$(cat "$dev/idVendor" 2>/dev/null)" = "$vid" ] && \
+           [ "$(cat "$dev/idProduct" 2>/dev/null)" = "$pid" ]; then
+            KVM_USB_HUB="$devname"
+            export KVM_USB_HUB
+            return 0
+        fi
+    done
+
+    KVM_USB_HUB=""
+    return 1
 }
