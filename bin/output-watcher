@@ -174,29 +174,33 @@ _startup_check() {
     # Re-resolve hub path — may have changed since last boot/reload
     svds_resolve_usb_hub || true
     [ -z "$KVM_USB_HUB" ] && { svds_log "STARTUP: no hub found for VID_PID=${KVM_USB_VID_PID:-<none>} — skipping KVM check"; return; }
-    # Wait for sway IPC to be ready and outputs to be resolved after reload.
-    # Poll get_outputs until it returns valid JSON with at least one output.
-    for _ready in $(seq 1 10); do
-        _n_out=$(swaymsg -t get_outputs 2>/dev/null | python3 -c "
-import json, sys
-try: print(len(json.load(sys.stdin)))
-except: print(0)
-" 2>/dev/null)
-        [[ "${_n_out:-0}" -gt 0 ]] && break
-        sleep 0.2
+
+    # Wait for BOTH sway IPC readiness AND the headless output to exist.
+    # vnc-serve creates HEADLESS-1 asynchronously; without it, ws-migrate has
+    # nowhere to park ws 99 and the migration is a no-op. Poll up to 15s.
+    local _headless_ready=0
+    for _ready in $(seq 1 30); do
+        svds_get_headless
+        if [ -n "$HEADLESS_OUTPUT" ]; then
+            _headless_ready=1
+            break
+        fi
+        sleep 0.5
     done
+
+    if [ "$_headless_ready" = "0" ]; then
+        svds_log "STARTUP: timed out waiting for headless output (15s) — skipping migration"
+        return
+    fi
+
+    svds_log "STARTUP: headless output ready ($HEADLESS_OUTPUT)"
+
     if [ -e "/sys/bus/usb/devices/${KVM_USB_HUB}" ]; then
         svds_log "STARTUP: KVM hub present — migrating to hdmi"
         ws-migrate hdmi 2>/dev/null || true
     else
-        # Don't migrate to headless if no headless output exists (vnc-serve kill)
-        svds_get_headless
-        if [ -n "$HEADLESS_OUTPUT" ]; then
-            svds_log "STARTUP: KVM hub absent — migrating to headless"
-            ws-migrate headless 2>/dev/null || true
-        else
-            svds_log "STARTUP: KVM hub absent but no headless output — skipping migration"
-        fi
+        svds_log "STARTUP: KVM hub absent — migrating to headless"
+        ws-migrate headless 2>/dev/null || true
     fi
 }
 
@@ -220,8 +224,13 @@ if [ -n "$KVM_USB_HUB" ] || [ -n "${KVM_USB_VID_PID:-}" ]; then
 fi
 
 # Sway output watcher: foreground, restarts on sway reload
+_sway_backoff=1
 while true; do
+    _sway_start=$SECONDS
     _sway_watcher
-    sleep 1  # restart backoff: prevent spin-loop if swaymsg subscribe exits immediately
-    svds_log "SWAY: watcher restarted"
+    # If it ran for more than 5s, the connection was real — reset backoff
+    (( SECONDS - _sway_start > 5 )) && _sway_backoff=1
+    sleep "$_sway_backoff"
+    svds_log "SWAY: watcher restarted (backoff=${_sway_backoff}s)"
+    (( _sway_backoff = _sway_backoff < 10 ? _sway_backoff * 2 : 10 ))
 done
