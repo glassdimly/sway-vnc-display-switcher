@@ -62,6 +62,7 @@ exec_always swaymsg -t get_tree | grep -q '"app_id": "dropdown"' || ${TERMINAL} 
 # keyboard input goes to the hidden scratchpad window and the session appears frozen.
 no_focus [app_id="dropdown"]
 for_window [app_id="dropdown"] {
+    move to output ${PHYSICAL_OUTPUT}
     floating enable
     resize set width ${DROPDOWN_WIDTH} height ${DROPDOWN_HEIGHT}
     move position 0 0

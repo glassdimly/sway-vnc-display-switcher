@@ -47,6 +47,34 @@ command -v python3 >/dev/null 2>&1 || { echo "Error: python3 is required" >&2; e
 TARGET="${1:-}"
 
 case "$TARGET" in
+    hdmi)     _check_output="$PHYSICAL_OUTPUT" ;;
+    headless) _check_output="$HEADLESS_OUTPUT" ;;
+    *)
+        echo "Usage: ws-migrate hdmi|headless" >&2
+        exit 1
+        ;;
+esac
+
+# Idempotency: skip if all 1..WS_MAX workspaces already on the correct output
+if [ -n "$_check_output" ]; then
+    _wrong=$(swaymsg -t get_workspaces 2>/dev/null | \
+        TARGET="$_check_output" WS_MAX="$WS_MAX" python3 -c "
+import json, sys, os
+ws = json.load(sys.stdin)
+target = os.environ['TARGET']
+ws_max = int(os.environ['WS_MAX'])
+wrong = [w for w in ws if 1 <= w.get('num', -1) <= ws_max and w.get('output') != target]
+print(len(wrong))
+" 2>/dev/null)
+    if [ "${_wrong:-1}" = "0" ]; then
+        _mlog "  SKIPPED — already on correct output"
+        svds_log "ws-migrate $TARGET: already correct, skipping" 2>/dev/null || true
+        exit 0
+    fi
+fi
+unset _check_output _wrong
+
+case "$TARGET" in
     hdmi)
         OUTPUT="$PHYSICAL_OUTPUT"
         # Flip workspace-to-output preference back to physical-first so Sway
@@ -113,10 +141,6 @@ case "$TARGET" in
         # IPC sync barrier: sway IPC is serialized, so get_outputs forces all
         # preceding output config commands to complete before we proceed.
         swaymsg -t get_outputs > /dev/null 2>&1
-        ;;
-    *)
-        echo "Usage: ws-migrate hdmi|headless" >&2
-        exit 1
         ;;
 esac
 
